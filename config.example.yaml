@@ -1,3 +1,4 @@
+# Copy to config.yaml (git-ignored) and edit.
 embed_wrapper: "#power-bi-iframe-wrapper"
 
 login:                      # adjust to the site's login form

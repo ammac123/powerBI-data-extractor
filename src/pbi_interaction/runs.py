@@ -1,14 +1,12 @@
 """Expand the run tree in config.yaml into a flat, validated list of runs."""
 
-from __future__ import annotations
-
 import itertools
 import json
 import re
 from dataclasses import dataclass
 from typing import Any
 
-from .settings import FilterSpec, RunConfig, RunNode
+from .settings import ExportType, FilterSpec, RunConfig, RunNode
 
 ScopeKey = tuple[str, str | None, str | None]  # (level, page, visual)
 
@@ -18,16 +16,15 @@ class Run:
     label: str
     page: str
     visual: str
-    export_type: str
+    export_type: ExportType
     filters: list[FilterSpec]
 
     def scopes(self) -> dict[ScopeKey, list[dict[str, Any]]]:
         """Group this run's SDK filters by the scope they are set on (report / page / visual)."""
         out: dict[ScopeKey, list[dict[str, Any]]] = {}
         for f in self.filters:
-            js = f.to_js()
-            key = (f.level, js["page"] if f.level != "report" else None, js["visual"] if f.level == "visual" else None)
-            out.setdefault(key, []).append(js["filter"])
+            key = (f.level, f.page if f.level != "report" else None, f.visual if f.level == "visual" else None)
+            out.setdefault(key, []).append(f.sdk_filter())
         return out
 
 
@@ -48,6 +45,8 @@ def _safe(segment: str) -> str:
 
 
 def _matrix_children(axes: list[FilterSpec]) -> list[RunNode]:
+    if any(f.raw is not None for f in axes):
+        raise ValueError("matrix axes must use table/column/values, not raw filters")
     per_axis = [[f.model_copy(update={"values": [v]}) for v in f.values] for f in axes]
     return [
         RunNode(label="_".join(_safe(f.values[0]) for f in combo), filters=list(combo))

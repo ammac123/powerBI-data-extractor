@@ -1,28 +1,25 @@
 """Browser lifecycle, login, and the Python -> window.pbiTool bridge."""
 
-from __future__ import annotations
-
 import logging
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from importlib import resources
-from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, NamedTuple, Self
 
-from playwright.sync_api import Browser, BrowserContext, Error as PlaywrightError, Page, sync_playwright
+from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from playwright.sync_api import Error as PlaywrightError
 
-from .runs import Run
+from .errors import AuthError, PbiError
+from .runs import Run, ScopeKey
 from .settings import RunConfig, Settings
 
-log = logging.getLogger("pbi")
+log = logging.getLogger(__name__)
 
 
-class AuthError(RuntimeError):
-    pass
-
-
-class PbiError(RuntimeError):
-    pass
+class Export(NamedTuple):
+    csv: str
+    rendered: bool  # a render was observed after this run's changes
 
 
 def _tool_js() -> str:
@@ -33,6 +30,7 @@ class PbiSession:
     def __init__(self, settings: Settings, cfg: RunConfig, headed: bool = False):
         self.settings, self.cfg = settings, cfg
         self.headless = settings.headless and not headed
+        self._touched: set[ScopeKey] = set()
         self.page: Page
         self._context: BrowserContext
         self._browser: Browser
@@ -40,15 +38,15 @@ class PbiSession:
     # ---- lifecycle -------------------------------------------------------
 
     @contextmanager
-    def open(self) -> Iterator["PbiSession"]:
+    def open(self) -> Iterator[Self]:
         with sync_playwright() as p:
             self._browser = p.chromium.launch(headless=self.headless)
             try:
                 self._start_context()
-                self._login_if_needed()
+                self._ensure_logged_in()
                 yield self
             except Exception:
-                self._debug_dump("failure")
+                self.debug_dump("failure")
                 raise
             finally:
                 self._browser.close()
@@ -72,19 +70,21 @@ class PbiSession:
         except PlaywrightError:
             return False
 
-    def _login_if_needed(self) -> None:
+    def _ensure_logged_in(self) -> None:
         self.page.goto(self.settings.site_url)
-        # A valid saved session lands straight on the embed.
-        if self.settings.state_path.exists() and self._embed_present(10):
-            log.info("reused saved session")
-            return
+        state = self.settings.state_path
+        if state.exists():
+            if self._embed_present(10):
+                log.info("reused saved session")
+                return
+            log.info("saved session is no longer valid; removing it")
+            state.unlink()
         self._login()
 
     def _login(self) -> None:
         log.info("logging in as %s", self.settings.username)
         sel = self.cfg.login
         password = self.settings.resolved_password().get_secret_value()
-        self.page.goto(self.settings.site_url)
         self.page.fill(sel.username, self.settings.username)
         self.page.fill(sel.password, password)
         self.page.click(sel.submit)
@@ -115,11 +115,11 @@ class PbiSession:
         self.wait_ready()
         return self.call("listVisuals", self.cfg.page)
 
-    def run_one(self, run: Run, prev_keys: set) -> tuple[str, set]:
-        """Navigate, show/hide, set filters, wait for fresh data, return (CSV text, filter scopes used).
+    def run_one(self, run: Run) -> Export:
+        """Navigate, show/hide, set filters, wait for fresh data, return the exported CSV.
 
-        Scopes touched by the previous run but not this one are reset to no filters, so filters
-        never leak from one run into the next.
+        Scopes touched by earlier runs but not this one are reset to no filters, so filters
+        never leak from one run into the next, even after a failed run.
         """
         self.wait_ready()
         # Mark the render counter BEFORE any change so only renders caused by this run count.
@@ -129,14 +129,15 @@ class PbiSession:
             res = self.call("hideVisuals", run.page, [run.visual, *self.cfg.keep_visuals])
             log.debug("hide visuals: %s", res)
         scopes = run.scopes()
-        keys = set(scopes)
+        self._touched |= set(scopes)  # recorded before applying: a partial failure may leave filters set
         payload = [
-            {"level": lvl, "page": pg, "visual": vis, "filters": scopes.get(k, [])}
-            for k in sorted(keys | prev_keys, key=str)
-            for lvl, pg, vis in [k]
+            {"level": lvl, "page": pg, "visual": vis, "filters": scopes.get(key, [])}
+            for key in sorted(self._touched, key=str)
+            for lvl, pg, vis in [key]
         ]
         if payload:
             self.call("applyScopes", payload)
+        self._touched = set(scopes)
         res = self.call(
             "exportVisual", run.page, run.visual,
             {
@@ -148,16 +149,16 @@ class PbiSession:
             },
         )
         log.info("export ok: %d reads, render observed=%s", res["reads"], res["rendered"])
-        return res["csv"], keys
+        return Export(res["csv"], res["rendered"])
 
     # ---- debugging -------------------------------------------------------
 
-    def _debug_dump(self, label: str) -> None:
+    def debug_dump(self, label: str) -> None:
         try:
             d = self.settings.debug_dir
             d.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.page.screenshot(path=str(d / f"{label}_{stamp}.png"))
             log.error("saved failure screenshot to %s", d)
-        except Exception:  # never mask the original error
+        except (PlaywrightError, OSError):  # never mask the original error
             pass

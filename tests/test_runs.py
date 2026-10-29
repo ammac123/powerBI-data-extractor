@@ -1,0 +1,78 @@
+import pytest
+
+from pbi_interaction.runs import _merge, expand
+from pbi_interaction.settings import FilterSpec, RunConfig
+
+
+def basic(table, column, *values, **kw):
+    return {"table": table, "column": column, "values": list(values), **kw}
+
+
+def cfg(**kw):
+    return RunConfig.model_validate({"page": "P", "visual": "V", **kw})
+
+
+def test_filters_accumulate_down_tree():
+    runs = expand(cfg(
+        filters=[basic("Calendar", "Year", 2025)],
+        runs=[{"label": "a", "filters": [basic("Product", "Cat", "X")],
+               "children": [{"label": "b", "filters": [basic("Ch", "Type", "Online")]}]}],
+    ))
+    assert [r.label for r in runs] == ["a/b"]
+    assert {f.table for f in runs[0].filters} == {"Calendar", "Product", "Ch"}
+
+
+def test_child_filter_overrides_parent_on_same_target():
+    runs = expand(cfg(runs=[{
+        "label": "a", "filters": [basic("T", "C", 1)],
+        "children": [{"label": "b", "filters": [basic("T", "C", 2)]}],
+    }]))
+    assert [f.values for f in runs[0].filters] == [[2]]
+
+
+def test_matrix_is_cartesian_product():
+    runs = expand(cfg(runs=[{"label": "m", "matrix": [basic("R", "N", "N", "S"), basic("Y", "Y", 1, 2)]}]))
+    assert [r.label for r in runs] == ["m/N_1", "m/N_2", "m/S_1", "m/S_2"]
+    assert all(len(r.filters) == 2 and all(len(f.values) == 1 for f in r.filters) for r in runs)
+
+
+def test_matrix_rejects_raw_filters():
+    raw = {"raw": {"target": {"table": "T", "column": "C"}}}
+    with pytest.raises(ValueError, match="matrix"):
+        expand(cfg(runs=[{"label": "m", "matrix": [raw]}]))
+
+
+def test_duplicate_labels_rejected():
+    with pytest.raises(ValueError, match="duplicate"):
+        expand(cfg(runs=[{"label": "a"}, {"label": "a"}]))
+
+
+@pytest.mark.parametrize("missing", ["page", "visual"])
+def test_missing_page_or_visual_rejected(missing):
+    base = {"page": "P", "visual": "V", "runs": [{"label": "a"}]}
+    del base[missing]
+    with pytest.raises(ValueError, match="no page/visual"):
+        expand(RunConfig.model_validate(base))
+
+
+def test_no_runs_yields_single_export():
+    assert [r.label for r in expand(cfg())] == ["V"]
+
+
+def test_page_and_visual_filters_default_to_run_scope():
+    runs = expand(cfg(filters=[
+        basic("T", "C", 1, level="page"), basic("T", "D", 1, level="visual"), basic("T", "E", 1),
+    ]))
+    assert set(runs[0].scopes()) == {("page", "P", None), ("visual", "P", "V"), ("report", None, None)}
+
+
+def test_merge_keeps_distinct_targets_and_replaces_same():
+    parent = [FilterSpec(table="T", column="A", values=[1]), FilterSpec(table="T", column="B", values=[1])]
+    merged = _merge(parent, [FilterSpec(table="T", column="A", values=[9])])
+    assert [(f.column, f.values) for f in merged] == [("A", [9]), ("B", [1])]
+
+
+def test_merge_distinguishes_levels():
+    merged = _merge([FilterSpec(table="T", column="A", values=[1])],
+                    [FilterSpec(level="page", page="P", table="T", column="A", values=[2])])
+    assert len(merged) == 2

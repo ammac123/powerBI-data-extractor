@@ -1,16 +1,20 @@
 """Secrets and environment config (env vars > .env > defaults) plus the YAML run config."""
 
-from __future__ import annotations
-
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Self
 
 import keyring
 import yaml
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .errors import AuthError
+
 KEYRING_SERVICE = "pbi-interaction"
+BASIC_FILTER_TYPE = 1  # powerbi-models FilterType.Basic
+
+Level = Literal["report", "page", "visual"]
+ExportType = Literal["Summarized", "Underlying"]
 
 
 class Settings(BaseSettings):
@@ -31,7 +35,7 @@ class Settings(BaseSettings):
             return self.password
         stored = keyring.get_password(KEYRING_SERVICE, self.username)
         if not stored:
-            raise RuntimeError(
+            raise AuthError(
                 "No password: set PBI_PASSWORD, or store one with "
                 f"`keyring set {KEYRING_SERVICE} {self.username}`"
             )
@@ -45,9 +49,12 @@ class LoginSelectors(BaseModel):
 
 
 class FilterSpec(BaseModel):
-    """Either a basic 'In' filter (table/column/values) or a raw SDK filter object."""
+    """Either a basic 'In' filter (table/column/values) or a raw SDK filter object.
 
-    level: str = "report"  # report | page | visual
+    page/visual may be omitted for page/visual-level filters; they then default to the run's own.
+    """
+
+    level: Level = "report"
     page: str | None = None
     visual: str | None = None
     table: str | None = None
@@ -55,18 +62,30 @@ class FilterSpec(BaseModel):
     values: list[Any] = Field(default_factory=list)
     raw: dict[str, Any] | None = None
 
-    def to_js(self) -> dict[str, Any]:
+    @model_validator(mode="after")
+    def _check_shape(self) -> Self:
+        basic = (self.table, self.column) != (None, None) or bool(self.values)
         if self.raw is not None:
-            sdk_filter = self.raw
-        else:
-            sdk_filter = {
-                "$schema": "http://powerbi.com/product/schema#basic",
-                "target": {"table": self.table, "column": self.column},
-                "operator": "In",
-                "values": self.values,
-                "filterType": 1,
-            }
-        return {"level": self.level, "page": self.page, "visual": self.visual, "filter": sdk_filter}
+            if basic:
+                raise ValueError("filter: use either raw or table/column/values, not both")
+        elif not (self.table and self.column and self.values):
+            raise ValueError("filter: needs raw, or table, column and values")
+        if self.level == "report" and (self.page or self.visual):
+            raise ValueError("report-level filter cannot set page or visual")
+        if self.level == "page" and self.visual:
+            raise ValueError("page-level filter cannot set visual")
+        return self
+
+    def sdk_filter(self) -> dict[str, Any]:
+        if self.raw is not None:
+            return self.raw
+        return {
+            "$schema": "http://powerbi.com/product/schema#basic",
+            "target": {"table": self.table, "column": self.column},
+            "operator": "In",
+            "values": self.values,
+            "filterType": BASIC_FILTER_TYPE,
+        }
 
 
 class RunNode(BaseModel):
@@ -79,10 +98,10 @@ class RunNode(BaseModel):
     label: str
     page: str | None = None
     visual: str | None = None
-    export_type: str | None = None
+    export_type: ExportType | None = None
     filters: list[FilterSpec] = Field(default_factory=list)
     matrix: list[FilterSpec] = Field(default_factory=list)
-    children: list["RunNode"] = Field(default_factory=list)
+    children: list[RunNode] = Field(default_factory=list)
 
 
 class RunConfig(BaseModel):
@@ -94,12 +113,12 @@ class RunConfig(BaseModel):
     hide_others: bool = True
     filters: list[FilterSpec] = Field(default_factory=list)
     runs: list[RunNode] = Field(default_factory=list)  # empty -> a single run from the fields above
-    export_type: str = "Summarized"  # Summarized | Underlying
+    export_type: ExportType = "Summarized"
     settle_ms: int = 750
     stable_reads: int = 2
 
     @classmethod
-    def load(cls, path: Path) -> "RunConfig":
+    def load(cls, path: Path) -> Self:
         if not path.exists():
-            return cls()
+            raise FileNotFoundError(f"config file not found: {path} (copy config.example.yaml to config.yaml)")
         return cls.model_validate(yaml.safe_load(path.read_text()) or {})

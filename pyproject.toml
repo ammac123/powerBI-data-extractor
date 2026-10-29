@@ -1,7 +1,7 @@
 [project]
 name = "pbi-interaction"
 version = "0.1.0"
-description = "Add your description here"
+description = "Drive an embedded Power BI report in a browser and export filtered visual data to CSV"
 readme = "README.md"
 authors = [
     { name = "Andrew Macleod", email = "andrew.munro.macleod@gmail.com" }
@@ -21,3 +21,18 @@ pbi-interaction = "pbi_interaction:main"
 [build-system]
 requires = ["uv_build>=0.12.5,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

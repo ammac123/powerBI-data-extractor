@@ -1,7 +1,5 @@
 """Run many exports in one logged-in session, with a manifest so batches are resumable."""
 
-from __future__ import annotations
-
 import csv
 import hashlib
 import json
@@ -13,7 +11,7 @@ from .clean import clean_csv
 from .runs import Run
 from .session import PbiSession
 
-log = logging.getLogger("pbi")
+log = logging.getLogger(__name__)
 
 FIELDS = ["label", "status", "rows", "sha256", "seconds", "file", "note", "page", "visual", "filters"]
 
@@ -34,6 +32,49 @@ def _write_manifest(path: Path, rows: dict[str, dict]) -> None:
     tmp.replace(path)  # rewritten after every run so a crash loses nothing
 
 
+def _export_run(
+    session: PbiSession, run: Run, batch_dir: Path, prev_hash: str | None, retries: int,
+) -> tuple[dict, str | None]:
+    """Export one run with retries; returns its manifest row and the data hash (None on error)."""
+    row = {
+        "label": run.label, "page": run.page, "visual": run.visual,
+        "filters": json.dumps([f.sdk_filter() for f in run.filters]),
+        "status": "error", "rows": "", "sha256": "", "seconds": "", "file": "", "note": "",
+    }
+    started = time.monotonic()
+    digest = None
+    for attempt in range(retries + 1):
+        try:
+            export = session.run_one(run)
+            digest = hashlib.sha256(export.csv.encode()).hexdigest()
+            # Same bytes as the previous run with no render observed is the classic stale-data symptom.
+            # Identical data after an observed render is plausible (e.g. a filter that changes nothing).
+            stale = digest == prev_hash and not export.rendered
+            if stale and attempt < retries:
+                log.warning("%s: identical to previous run with no re-render, retrying", run.label)
+                continue
+            df = clean_csv(export.csv)
+            out = batch_dir / f"{run.label}.csv"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(out, index=False)
+            note = ""
+            if digest == prev_hash:
+                detail = "with no re-render observed" if stale else "(re-rendered)"
+                note = f"identical to previous run's data {detail}"
+            row.update(
+                status="suspect" if stale else "ok", rows=len(df), sha256=digest,
+                file=str(out.relative_to(batch_dir)), note=note,
+            )
+            break
+        except Exception as e:  # keep going; the failure is recorded and reflected in the exit code
+            digest = None
+            row["note"] = f"{type(e).__name__}: {e}"[:300]
+            log.error("%s attempt %d failed: %s", run.label, attempt + 1, row["note"])
+            session.debug_dump(run.label.replace("/", "_"))
+    row["seconds"] = round(time.monotonic() - started, 1)
+    return row, digest
+
+
 def run_batch(
     session: PbiSession, runs: list[Run], batch_dir: Path, *, force: bool = False, retries: int = 1,
 ) -> int:
@@ -41,7 +82,7 @@ def run_batch(
     batch_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = batch_dir / "manifest.csv"
     manifest = _load_manifest(manifest_path)
-    prev_keys: set = set()
+    # Hash of the data the browser currently shows; unknown (None) after an error. Skipped runs leave it as is.
     prev_hash: str | None = None
 
     for i, run in enumerate(runs, 1):
@@ -49,42 +90,12 @@ def run_batch(
             log.info("[%d/%d] skip %s (already ok)", i, len(runs), run.label)
             continue
         log.info("[%d/%d] %s", i, len(runs), run.label)
-        row = {
-            "label": run.label, "page": run.page, "visual": run.visual,
-            "filters": json.dumps([f.to_js()["filter"] for f in run.filters]),
-            "status": "error", "rows": "", "sha256": "", "seconds": "", "file": "", "note": "",
-        }
-        started = time.monotonic()
-        for attempt in range(retries + 1):
-            try:
-                csv_text, keys = session.run_one(run, prev_keys)
-                digest = hashlib.sha256(csv_text.encode()).hexdigest()
-                # Same bytes as the previous run despite different filters is the classic stale-data symptom.
-                if digest == prev_hash and attempt < retries:
-                    log.warning("%s: identical to previous run, retrying once", run.label)
-                    prev_keys = keys
-                    continue
-                df = clean_csv(csv_text)
-                out = batch_dir / f"{run.label}.csv"
-                out.parent.mkdir(parents=True, exist_ok=True)
-                df.to_csv(out, index=False)
-                suspect = digest == prev_hash
-                row.update(
-                    status="suspect" if suspect else "ok", rows=len(df), sha256=digest,
-                    file=str(out.relative_to(batch_dir)),
-                    note="identical to previous run's data despite different filters" if suspect else "",
-                )
-                prev_keys, prev_hash = keys, digest
-                break
-            except Exception as e:  # keep going; the failure is recorded and reflected in the exit code
-                row["note"] = f"{type(e).__name__}: {e}"[:300]
-                log.error("%s attempt %d failed: %s", run.label, attempt + 1, row["note"])
-                session._debug_dump(run.label.replace("/", "_"))
-        row["seconds"] = round(time.monotonic() - started, 1)
+        row, prev_hash = _export_run(session, run, batch_dir, prev_hash, retries)
         manifest[run.label] = row
         _write_manifest(manifest_path, manifest)
 
-    bad = [r for r in manifest.values() if r["label"] in {x.label for x in runs} and r["status"] != "ok"]
+    labels = {run.label for run in runs}
+    bad = [r for r in manifest.values() if r["label"] in labels and r["status"] != "ok"]
     for r in bad:
         log.error("%s: %s %s", r["label"], r["status"], r["note"])
     return len(bad)

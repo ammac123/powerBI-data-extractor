@@ -2,6 +2,17 @@
 // powerbi-client SDK. Python calls these via page.evaluate and passes plain JSON.
 // Written defensively: the host site may run an old SDK, so every optional API is
 // feature-detected rather than assumed.
+//
+// window.pbiTool API (pages/visuals are matched by internal name or title; duplicate titles throw):
+//   getReport(wrapperSel?)            -> SDK report for the embed wrapper
+//   waitReady(wrapperSel, timeoutMs)  -> { pages } once the report lists pages
+//   probe(wrapperSel)                 -> which SDK APIs are available
+//   listVisuals(pageRef?)             -> [{ page, pageName, name, title, type }]
+//   setPage(pageRef)                  -> activates a page
+//   hideVisuals(pageRef, keep)        -> hides every visual on the page except keep
+//   applyScopes(scopes)               -> sets (replaces) filters per report/page/visual scope
+//   exportVisual(pageRef, visualRef, opts) -> { csv, reads, rendered }; page must already be active
+//   renderCount()                     -> renders seen so far (pass as opts.sinceCount)
 (() => {
   if (window.pbiTool) return;
 
@@ -53,22 +64,21 @@
     throw new Error(`Report not ready after ${timeoutMs}ms: ${lastErr ? lastErr.message : "no pages"}`);
   }
 
+  // Prefers an exact internal-name match; otherwise the title must match exactly one item.
+  function pickUnique(items, ref, kind, titleKey) {
+    const byName = items.filter((i) => i.name === ref);
+    const matches = byName.length ? byName : items.filter((i) => i[titleKey] === ref);
+    if (matches.length === 1) return matches[0];
+    const problem = matches.length ? `is ambiguous (${matches.length} matches; use the internal name)` : "not found";
+    throw new Error(`${kind} "${ref}" ${problem}. Available: ${items.map((i) => `${i[titleKey] || i.name} [${i.name}]`).join(", ")}`);
+  }
+
   async function findPage(report, pageRef) {
-    const pages = await report.getPages();
-    const page = pages.find((p) => p.name === pageRef || p.displayName === pageRef);
-    if (!page) {
-      throw new Error(`Page "${pageRef}" not found. Available: ${pages.map((p) => p.displayName).join(", ")}`);
-    }
-    return page;
+    return pickUnique(await report.getPages(), pageRef, "Page", "displayName");
   }
 
   async function findVisual(page, visualRef) {
-    const visuals = await page.getVisuals();
-    const v = visuals.find((x) => x.name === visualRef || x.title === visualRef);
-    if (!v) {
-      throw new Error(`Visual "${visualRef}" not found. Available: ${visuals.map((x) => x.title || x.name).join(", ")}`);
-    }
-    return v;
+    return pickUnique(await page.getVisuals(), visualRef, "Visual", "title");
   }
 
   // ---- discovery ---------------------------------------------------------
@@ -179,7 +189,7 @@
   }
 
   // Export the visual's data, only returning once two consecutive reads agree.
-  // markCount should be captured BEFORE the change that is expected to re-render (see Python caller).
+  // sinceCount should be captured BEFORE the change that is expected to re-render (see Python caller).
   async function exportVisual(pageRef, visualRef, opts = {}) {
     const {
       type = "Summarized", settleMs = 750, firstRenderMs = 5000,
@@ -187,7 +197,6 @@
     } = opts;
     const report = getReport();
     const page = await findPage(report, pageRef);
-    if (typeof page.setActive === "function") await page.setActive();
     const visual = await findVisual(page, visualRef);
     if (typeof visual.exportData !== "function") throw new Error("visual.exportData is not supported by this SDK version");
 
