@@ -218,3 +218,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Agents
+.claude/
+
+# Local state and outputs
+.state/
+out/
+debug/
