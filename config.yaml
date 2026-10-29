@@ -1,0 +1,51 @@
+embed_wrapper: "#power-bi-iframe-wrapper"
+
+login:                      # adjust to the site's login form
+  username: "input[name='username']"
+  password: "input[name='password']"
+  submit: "button[type='submit']"
+
+# Defaults inherited by every run below (any run/parent can override page, visual, export_type).
+page: "Overview"
+visual: "Sales by Region"
+hide_others: true
+keep_visuals: []
+filters:                    # applied to every run
+  - level: report
+    table: Calendar
+    column: Year
+    values: [2025]
+
+export_type: Summarized    # or Underlying
+settle_ms: 750
+stable_reads: 2
+
+# Tree of runs. A node with children is a group (no export of its own); a node without is one export.
+# Filters accumulate down the tree; a child filter on the same table/column replaces its parent's.
+# Output: out/<batch>/<label path>.csv, e.g. out/<batch>/retail/online.csv
+runs:
+  - label: retail                      # group: several subsets of one category
+    filters:
+      - {level: report, table: Product, column: Category, values: [Retail]}
+    children:
+      - label: online
+        filters:
+          - {level: report, table: Channel, column: Type, values: [Online]}
+      - label: instore
+        filters:
+          - {level: report, table: Channel, column: Type, values: [Store]}
+          - {level: report, table: Region, column: Name, values: [North]}
+
+  - label: wholesale                   # leaf: a single export for this category
+    filters:
+      - {level: report, table: Product, column: Category, values: [Wholesale]}
+
+  - label: by_region                   # matrix: one export per value
+    matrix:
+      - {level: report, table: Region, column: Name, values: [North, South, East]}
+
+  - label: returns                     # different page + visual
+    page: "Returns"
+    visual: "Returns by Reason"
+    filters:
+      - {level: report, table: Product, column: Category, values: [Retail]}
