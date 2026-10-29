@@ -1,5 +1,6 @@
 """Secrets and environment config (env vars > .env > defaults) plus the YAML run config."""
 
+import re
 from pathlib import Path
 from typing import Any, Literal, Self
 
@@ -104,6 +105,48 @@ class RunNode(BaseModel):
     children: list[RunNode] = Field(default_factory=list)
 
 
+BAD_SHEET_NAME = re.compile(r"[\[\]:*?/\\]")
+SHEET_NAME_MAX = 31
+
+
+def check_sheet_name(name: str) -> str:
+    if not name or len(name) > SHEET_NAME_MAX or BAD_SHEET_NAME.search(name) or name.strip("'") != name:
+        raise ValueError(f"invalid sheet name {name!r}: 1-{SHEET_NAME_MAX} chars, none of []:*?/\\, no edge quotes")
+    if name.lower() == "history":
+        raise ValueError("sheet name 'History' is reserved by Excel")
+    return name
+
+
+class SheetSpec(BaseModel):
+    """`sheet`: one worksheet per matched run. `aggregate`: matched runs share a sheet, joined on `key`."""
+
+    name: str
+    runs: list[str]  # fnmatch globs over run labels
+    mode: Literal["sheet", "aggregate"] = "sheet"
+    key: list[str] = Field(default_factory=list)
+    layout: Literal["merged", "blocks"] = "merged"  # merged: one outer-joined table; blocks: a table per run
+
+    @model_validator(mode="after")
+    def _check(self) -> Self:
+        check_sheet_name(self.name)
+        if self.mode == "aggregate" and not self.key:
+            raise ValueError(f"sheet '{self.name}': aggregate needs a key")
+        return self
+
+
+class WorkbookSpec(BaseModel):
+    name: str
+    sheets: list[SheetSpec]
+    unassigned: Literal["sheet", "ignore", "error"] = "sheet"  # runs matched by no sheet
+
+    @model_validator(mode="after")
+    def _unique_sheets(self) -> Self:
+        names = [s.name.lower() for s in self.sheets]
+        if len(set(names)) != len(names):
+            raise ValueError(f"workbook '{self.name}': duplicate sheet names")
+        return self
+
+
 class RunConfig(BaseModel):
     embed_wrapper: str = "#power-bi-iframe-wrapper"
     login: LoginSelectors = LoginSelectors()
@@ -116,6 +159,14 @@ class RunConfig(BaseModel):
     export_type: ExportType = "Summarized"
     settle_ms: int = 750
     stable_reads: int = 2
+    workbooks: list[WorkbookSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _unique_workbooks(self) -> Self:
+        names = [w.name for w in self.workbooks]
+        if len(set(names)) != len(names):
+            raise ValueError("duplicate workbook names")
+        return self
 
     @classmethod
     def load(cls, path: Path) -> Self:

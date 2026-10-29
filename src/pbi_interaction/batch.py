@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from .clean import clean_csv
 from .runs import Run
@@ -16,14 +17,14 @@ log = logging.getLogger(__name__)
 FIELDS = ["label", "status", "rows", "sha256", "seconds", "file", "note", "page", "visual", "filters"]
 
 
-def _load_manifest(path: Path) -> dict[str, dict]:
+def load_manifest(path: Path) -> Dict[str, dict]:
     if not path.exists():
         return {}
     with path.open(newline="") as fh:
         return {row["label"]: row for row in csv.DictReader(fh)}
 
 
-def _write_manifest(path: Path, rows: dict[str, dict]) -> None:
+def _write_manifest(path: Path, rows: Dict[str, dict]) -> None:
     tmp = path.with_suffix(".tmp")
     with tmp.open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=FIELDS)
@@ -33,8 +34,8 @@ def _write_manifest(path: Path, rows: dict[str, dict]) -> None:
 
 
 def _export_run(
-    session: PbiSession, run: Run, batch_dir: Path, prev_hash: str | None, retries: int,
-) -> tuple[dict, str | None]:
+    session: PbiSession, run: Run, batch_dir: Path, prev_hash: Optional[str], retries: int,
+) -> Tuple[dict, Optional[str]]:
     """Export one run with retries; returns its manifest row and the data hash (None on error)."""
     row = {
         "label": run.label, "page": run.page, "visual": run.visual,
@@ -76,17 +77,18 @@ def _export_run(
 
 
 def run_batch(
-    session: PbiSession, runs: list[Run], batch_dir: Path, *, force: bool = False, retries: int = 1,
+    session: PbiSession, runs: List[Run], batch_dir: Path, *, force: bool = False, retries: int = 1,
 ) -> int:
     """Returns the number of runs that did not finish with status ok."""
     batch_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = batch_dir / "manifest.csv"
-    manifest = _load_manifest(manifest_path)
+    manifest = load_manifest(manifest_path)
     # Hash of the data the browser currently shows; unknown (None) after an error. Skipped runs leave it as is.
-    prev_hash: str | None = None
+    prev_hash: Optional[str] = None
 
     for i, run in enumerate(runs, 1):
-        if not force and manifest.get(run.label, {}).get("status") == "ok":
+        done = manifest.get(run.label, {})
+        if not force and done.get("status") == "ok" and (batch_dir / done.get("file", "")).exists():
             log.info("[%d/%d] skip %s (already ok)", i, len(runs), run.label)
             continue
         log.info("[%d/%d] %s", i, len(runs), run.label)
@@ -99,3 +101,14 @@ def run_batch(
     for r in bad:
         log.error("%s: %s %s", r["label"], r["status"], r["note"])
     return len(bad)
+
+
+def remove_csvs(batch_dir: Path, labels: Iterable[str]) -> None:
+    """Delete the CSVs of the given run labels (and emptied folders); the manifest stays."""
+    manifest = load_manifest(batch_dir / "manifest.csv")
+    for label in labels:
+        if file := manifest.get(label, {}).get("file"):
+            (batch_dir / file).unlink(missing_ok=True)
+    for folder in sorted((p for p in batch_dir.rglob("*") if p.is_dir()), reverse=True):
+        if not any(folder.iterdir()):
+            folder.rmdir()

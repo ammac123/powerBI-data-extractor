@@ -19,8 +19,13 @@ def clean_csv(csv_text: str) -> pd.DataFrame:
     df = df.replace("", pd.NA).dropna(how="all")
     if len(df) and str(df.iloc[-1, 0]).strip().lower() in _TOTAL_LABELS:
         df = df.iloc[:-1]
+    return coerce_numbers(df).reset_index(drop=True)
+
+
+def coerce_numbers(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert string columns whose every non-null value is a plain number."""
     for col in df.columns:
         values = df[col].dropna()
         if len(values) and values.str.fullmatch(_NUMBER).all():
             df[col] = pd.to_numeric(df[col].str.replace(",", "", regex=False))
-    return df.reset_index(drop=True)
+    return df

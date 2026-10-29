@@ -40,7 +40,7 @@ def _merge(parent: list[FilterSpec], child: list[FilterSpec]) -> list[FilterSpec
     return list(merged.values())
 
 
-def _safe(segment: str) -> str:
+def safe(segment: str) -> str:
     return re.sub(r"[^\w.\- ]+", "_", str(segment)).strip() or "_"
 
 
@@ -49,7 +49,7 @@ def _matrix_children(axes: list[FilterSpec]) -> list[RunNode]:
         raise ValueError("matrix axes must use table/column/values, not raw filters")
     per_axis = [[f.model_copy(update={"values": [v]}) for v in f.values] for f in axes]
     return [
-        RunNode(label="_".join(_safe(f.values[0]) for f in combo), filters=list(combo))
+        RunNode(label="_".join(safe(f.values[0]) for f in combo), filters=list(combo))
         for combo in itertools.product(*per_axis)
     ]
 
@@ -63,7 +63,7 @@ def expand(cfg: RunConfig) -> list[Run]:
     out: list[Run] = []
 
     def walk(node: RunNode, prefix: str, page, visual, etype, filters) -> None:
-        label = f"{prefix}/{_safe(node.label)}" if prefix else _safe(node.label)
+        label = f"{prefix}/{safe(node.label)}" if prefix else safe(node.label)
         page, visual = node.page or page, node.visual or visual
         etype = node.export_type or etype
         filters = _merge(filters, node.filters)

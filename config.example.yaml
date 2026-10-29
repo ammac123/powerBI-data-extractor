@@ -50,3 +50,16 @@ runs:
     visual: "Returns by Reason"
     filters:
       - {level: report, table: Product, column: Category, values: [Retail]}
+
+# Optional Excel workbooks, built with `export --format xlsx` or `build-xlsx --batch NAME` (CSVs are kept; --clean deletes them).
+# Runs are matched by label glob. Runs on no sheet get their own sheet (unassigned: sheet | ignore | error).
+#   mode: sheet      one worksheet per matched run
+#   mode: aggregate  matched runs share a sheet, joined on `key`
+#     layout: merged  one table, outer-joined on key, other columns suffixed _<run>
+#                     (a run with repeated key values goes on its own sheet with a warning)
+#     layout: blocks  one table per run side by side, key repeated in each
+workbooks:
+  - name: sales_report                 # -> out/<batch>/sales_report.xlsx
+    sheets:
+      - {name: Retail, runs: ["retail/*"], mode: aggregate, key: [Region], layout: merged}
+      - {name: Returns, runs: ["returns"]}

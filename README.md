@@ -64,7 +64,8 @@ uv run pbi-interaction [--config PATH] [--headed] [-v] [--version] <command>
 | --- | --- |
 | `probe` | report which SDK APIs the host page offers (also written to `debug/capabilities.json`) |
 | `list` | list pages and visuals with their internal names |
-| `export` | run every export in the config |
+| `export` | run every export in the config (`--format xlsx` also builds workbooks, `--clean` then deletes the CSVs) |
+| `build-xlsx` | build the `workbooks` from an existing batch (`--batch NAME [--workbook NAME] [--clean]`) |
 
 `export` flags:
 
