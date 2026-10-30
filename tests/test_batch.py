@@ -1,6 +1,9 @@
 import csv
 
+import pytest
+
 from pbi_interaction.batch import run_batch
+from pbi_interaction.errors import AuthError
 from pbi_interaction.runs import Run
 from pbi_interaction.session import Export
 
@@ -88,3 +91,12 @@ def test_skipped_runs_do_not_hide_staleness(tmp_path):
     session = FakeSession({"b": same})
     run_batch(session, runs("a", "b"), tmp_path)
     assert manifest(tmp_path)["b"]["status"] == "ok"
+
+
+def test_auth_error_aborts_batch_and_keeps_completed_runs(tmp_path):
+    session = FakeSession({"a": data(1), "b": AuthError("expired"), "c": data(3)})
+    with pytest.raises(AuthError):
+        run_batch(session, runs("a", "b", "c"), tmp_path)
+    assert session.calls == ["a", "b"]
+    assert session.dumps == []
+    assert {k: v["status"] for k, v in manifest(tmp_path).items()} == {"a": "ok"}

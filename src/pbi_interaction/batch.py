@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .clean import clean_csv
+from .errors import AuthError
 from .runs import Run
 from .session import PbiSession
 
@@ -67,6 +68,8 @@ def _export_run(
                 file=str(out.relative_to(batch_dir)), note=note,
             )
             break
+        except AuthError:
+            raise
         except Exception as e:  # keep going; the failure is recorded and reflected in the exit code
             digest = None
             row["note"] = f"{type(e).__name__}: {e}"[:300]
