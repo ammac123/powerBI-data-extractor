@@ -131,8 +131,11 @@ class PbiSession:
     # ---- JS bridge -------------------------------------------------------
 
     def call(self, fn: str, *args: Any) -> Any:
+        log.debug("pbiTool.%s ...", fn)
         try:
-            return self.page.evaluate("([fn, args]) => window.pbiTool[fn](...args)", [fn, list(args)])
+            result = self.page.evaluate("([fn, args]) => window.pbiTool[fn](...args)", [fn, list(args)])
+            log.debug("pbiTool.%s returned", fn)
+            return result
         except PlaywrightError as e:
             raise PbiError(f"pbiTool.{fn} failed: {e.message.splitlines()[0]}") from e
 

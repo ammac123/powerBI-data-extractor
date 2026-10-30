@@ -20,8 +20,16 @@
   if (window.pbiTool) return;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // SDK calls made before the report iframe is ready can stay pending forever.
+  const withTimeout = (promise, ms, what) => {
+    let timer;
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms); });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  };
   const state = { report: null, wrapperSel: null, renderCount: 0, lastRenderAt: 0, listening: false };
 
+  const GET_PAGES_TIMEOUT_MS = 3000;
   const RENDER_QUIET_MS = 1500;  // no render/loaded event for this long counts as settled
   const NO_RENDER_EVENT_MS = 5000;  // events may predate our listener; proceed after this long without any
 
@@ -63,7 +71,7 @@
     while (performance.now() < deadline) {
       try {
         const report = getReport(wrapperSel);
-        const pages = await report.getPages();
+        const pages = await withTimeout(report.getPages(), GET_PAGES_TIMEOUT_MS, "getPages");
         if (pages && pages.length) {
           // Pages list before visuals initialise: also wait for a render, then for renders to go quiet.
           pagesSeenAt ??= performance.now();
