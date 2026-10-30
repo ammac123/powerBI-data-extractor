@@ -26,8 +26,8 @@ filters:                    # applied to every run
 # Top-level `slicers:` apply to every run, so use them only when all runs are on the slicers' page.
 
 export_type: Summarized    # or Underlying
-settle_ms: 750
-stable_reads: 2
+settle_ms: 1500
+stable_reads: 1
 
 # Tree of runs. A node with children is a group (no export of its own); a node without is one export.
 # Filters accumulate down the tree; a child filter on the same table/column replaces its parent's.

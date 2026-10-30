@@ -23,7 +23,8 @@ Copy `.env.example` to `.env` and fill it in:
 | `PBI_USERNAME` | login user (required) |
 | `PBI_PASSWORD` | optional; if unset the macOS Keychain is used |
 | `PBI_HEADLESS` | `true`/`false` (default `true`) |
-| `PBI_TIMEOUT_S` | per-wait timeout in seconds (default `60`) |
+| `PBI_TIMEOUT_S` | browser and login wait timeout in seconds (default `60`) |
+| `PBI_RUN_TIMEOUT_S` | master timeout for one export, retries included (default `300`) |
 | `PBI_STATE_PATH`, `PBI_OUT_DIR`, `PBI_DEBUG_DIR` | where session state, outputs and debug files go |
 
 To keep the password out of `.env`:
@@ -45,8 +46,9 @@ The CLI reads `config.yaml` from the working directory (override with `--config`
 - `embed_wrapper`, `login`: CSS selectors for the embed container and the login form.
 - `page`, `visual`, `export_type` (`Summarized` or `Underlying`), `filters`: defaults inherited by every run.
 - `hide_others` / `keep_visuals`: hide every other visual on the page so only the target renders (via a custom page layout, as powerbi-client 2.10 has no `setVisualDisplayState`).
-- `settle_ms`, `stable_reads`: how long the report must be quiet and how many identical consecutive reads
-  are needed before data is accepted.
+- `settle_ms`, `stable_reads`: after a change, the export waits for the report's `rendered` event, then for
+  `settle_ms` (default 1500) without another, before reading; `stable_reads` identical reads are then needed
+  (default 1). There is no fallback: a change that never renders fails at `PBI_RUN_TIMEOUT_S`.
 - `runs`: a tree of runs. A node with `children` is a group; a node without is one export. Filters accumulate
   down the tree and a child filter on the same table/column replaces its parent's. `matrix` expands to one
   child per combination of the axes' values. Any node may override `page`, `visual` and `export_type`.

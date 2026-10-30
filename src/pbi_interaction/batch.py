@@ -52,29 +52,22 @@ def _export_run(
         "status": "error", "rows": "", "sha256": "", "seconds": "", "file": "", "note": "",
     }
     started = time.monotonic()
+    deadline = started + session.settings.run_timeout_s  # shared by the retries
     digest = None
     for attempt in range(retries + 1):
         try:
-            export = session.run_one(run)
+            # run_one only returns once this run's changes have re-rendered, so identical data is genuine.
+            export = session.run_one(run, deadline)
             digest = hashlib.sha256(export.csv.encode()).hexdigest()
-            # Same bytes as the previous run with no render observed is the classic stale-data symptom.
-            # Identical data after an observed render is plausible (e.g. a filter that changes nothing).
-            stale = digest == prev_hash and not export.rendered
-            if stale and attempt < retries:
-                log.warning("%s: identical to previous run with no re-render, retrying", run.label)
-                continue
             df = clean_csv(export.csv)
             out = batch_dir / f"{run.label}.csv"
             out.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(out, index=False)
             note = ""
             if digest == prev_hash:
-                detail = "with no re-render observed" if stale else "(re-rendered)"
-                note = f"identical to previous run's data {detail}"
-            row.update(
-                status="suspect" if stale else "ok", rows=len(df), sha256=digest,
-                file=str(out.relative_to(batch_dir)), note=note,
-            )
+                why = "re-rendered" if export.rendered else "nothing changed"
+                note = f"identical to previous run's data ({why})"
+            row.update(status="ok", rows=len(df), sha256=digest, file=str(out.relative_to(batch_dir)), note=note)
             break
         except AuthError:
             raise

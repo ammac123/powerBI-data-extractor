@@ -1,6 +1,8 @@
 """Browser lifecycle, login, and the Python -> window.pbiTool bridge."""
 
+import json
 import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -19,7 +21,7 @@ log = logging.getLogger(__name__)
 
 class Export(NamedTuple):
     csv: str
-    rendered: bool  # a render was observed after this run's changes
+    rendered: bool  # this run changed the report and waited for it to re-render; False: nothing needed changing
 
 
 SlicerKey = tuple[str, str]  # (page, slicer id)
@@ -59,8 +61,10 @@ class PbiSession:
     def __init__(self, settings: Settings, cfg: RunConfig, headed: bool = False):
         self.settings, self.cfg = settings, cfg
         self.headless = settings.headless and not headed
-        self._touched: set[ScopeKey] = set()
+        self._filters: dict[ScopeKey, list[dict] | None] = {}  # last applied per scope; None: unknown after a failure
         self._slicer_applied: dict[SlicerKey, Values | None] = {}
+        self._raw_applied: dict[SlicerKey, str] = {}  # raw states sent, as sorted JSON
+        self._deadline: float | None = None  # monotonic time the current run must finish by
         self._slicer_catalog: dict[str, list[dict]] = {}
         self._slicer_set: set[SlicerKey] = set()  # set by an earlier run: reset to default once unused
         self.page: Page
@@ -147,18 +151,21 @@ class PbiSession:
     # ---- JS bridge -------------------------------------------------------
 
     def call(self, fn: str, *args: Any) -> Any:
+        """Within a run, every call shares the run's deadline; otherwise each call gets run_timeout_s."""
+        budget_s = self.settings.run_timeout_s if self._deadline is None else self._deadline - time.monotonic()
+        if budget_s <= 0:
+            raise PbiError(f"pbiTool.{fn} not started: run timeout of {self.settings.run_timeout_s:g}s reached")
+        cfg = {"wrapper": self.cfg.embed_wrapper, "budgetMs": int(budget_s * 1000), "settleMs": self.cfg.settle_ms}
         try:
             return self.page.evaluate(
-                "([cfg, fn, args]) => (window.pbiTool.configure(cfg), window.pbiTool[fn](...args))",
-                [{"wrapper": self.cfg.embed_wrapper, "timeoutMs": int(self.settings.timeout_s * 1000)}, fn, list(args)],
+                "([cfg, fn, args]) => window.pbiTool.invoke(cfg, fn, args)", [cfg, fn, list(args)],
             )
         except PlaywrightError as e:
             raise PbiError(f"pbiTool.{fn} failed: {e.message.splitlines()[0]}") from e
 
     def wait_ready(self) -> None:
-        """Wait for powerbi.get to find the report, then for it to render; each step has its own timeout."""
-        timeout_ms = int(self.settings.timeout_s * 1000)
-        self.call("waitReady", timeout_ms, timeout_ms)
+        """Wait for powerbi.get to find the report, then for it to render and go quiet."""
+        self.call("waitReady")
 
     def probe(self) -> dict:
         return self.call("probe")
@@ -276,24 +283,29 @@ class PbiSession:
     def _forget_other_pages(self, page: str) -> None:
         """Synced slicers can change on other pages too, so their cached state is stale after an apply."""
         self._slicer_applied = {k: v for k, v in self._slicer_applied.items() if k[0] == page}
+        self._raw_applied = {k: v for k, v in self._raw_applied.items() if k[0] == page}
         self._slicer_catalog = {p: c for p, c in self._slicer_catalog.items() if p == page}
 
-    def _apply_slicers(self, run: Run) -> list[str]:
-        """Send only the slicers whose state differs from the last known; returns ids the run sets."""
-        page = run.page
-        if page not in self._slicer_catalog:
-            self._sync_slicers(page)
-        desired, own = self._desired_slicers(run)
+    def _plan_slicers(self, run: Run) -> tuple[dict[str, dict], list[str]]:
+        if run.page not in self._slicer_catalog:
+            self._sync_slicers(run.page)
+        return self._desired_slicers(run)
+
+    def _slicer_differs(self, key: SlicerKey, state: dict) -> bool:
+        if state["kind"] == "raw":
+            return self._raw_applied.get(key) != json.dumps(state["state"], sort_keys=True)
+        return self._slicer_applied.get(key) != _norm(state["values"])
+
+    def _apply_slicers(self, page: str, desired: dict[str, dict]) -> None:
+        """Send only the slicers whose state differs from the last known."""
         if any((page, sid) not in self._slicer_applied for sid in desired):
             self._sync_slicers(page)
-        changes = {
-            sid: state for sid, state in desired.items()
-            if state["kind"] == "raw" or self._slicer_applied.get((page, sid)) != _norm(state["values"])
-        }
+        changes = {sid: state for sid, state in desired.items() if self._slicer_differs((page, sid), state)}
         if not changes:
-            return own
+            return
         for sid in changes:  # unknown until read back: a partial failure re-syncs next run
             self._slicer_applied.pop((page, sid), None)
+            self._raw_applied.pop((page, sid), None)
         self._forget_other_pages(page)
         res = self.call("applySlicers", page, [{"visual": sid, "state": st} for sid, st in changes.items()])
         results = {r["visual"]: r for r in res["applied"]}
@@ -303,50 +315,56 @@ class PbiSession:
             actual = _norm(r.get("values"))
             if r.get("ok") and (state["kind"] == "raw" or actual == _norm(state["values"])):
                 self._slicer_applied[(page, sid)] = actual
+                if state["kind"] == "raw":
+                    self._raw_applied[(page, sid)] = json.dumps(state["state"], sort_keys=True)
             else:
                 requested = state["state"] if state["kind"] == "raw" else list(_norm(state["values"]))
                 detail = f"slicer {sid}: requested {requested}, got {_show(actual)} {r.get('error', '')}"
                 failures.append(detail.rstrip())
         if failures:
             raise PbiError("slicer apply failed: " + "; ".join(failures))
-        return own
 
-    def run_one(self, run: Run) -> Export:
-        """Navigate, set slicers, show/hide, set filters, wait for fresh data, return the exported CSV.
-
-        Scopes touched by earlier runs but not this one are reset to no filters, so filters
-        never leak from one run into the next, even after a failed run.
-        """
-        self.wait_ready()
-        self.call("setPage", run.page)  # waits for the page's own render
-        # Mark the render counter BEFORE this run's changes so only renders they cause count.
-        since = self.call("renderCount")
-        own_slicers = self._apply_slicers(run) if self.cfg.slicer_names or run.slicers else []
-        if self.cfg.hide_others:
-            keep = [self._visual_id(v, run.page) for v in self.cfg.keep_visuals]
-            res = self.call("hideVisuals", run.page, [run.visual, *keep, *own_slicers])
-            log.debug("hide visuals: %s", res)
+    def _apply_filters(self, run: Run) -> None:
+        """Set only the scopes whose filters differ from the last applied; scopes no longer used are cleared."""
         scopes = run.scopes()
-        self._touched |= set(scopes)  # recorded before applying: a partial failure may leave filters set
-        payload = [
-            {"level": lvl, "page": pg, "visual": vis, "filters": scopes.get(key, [])}
-            for key in sorted(self._touched, key=str)
-            for lvl, pg, vis in [key]
-        ]
-        if payload:
-            self.call("applyScopes", payload)
-        self._touched = set(scopes)
-        res = self.call(
-            "exportVisual", run.page, run.visual,
-            {
-                "type": run.export_type,
-                "settleMs": self.cfg.settle_ms,
-                "stableReads": self.cfg.stable_reads,
-                "timeoutMs": int(self.settings.timeout_s * 1000),
-                "sinceCount": since,
-            },
-        )
-        log.info("export ok: %d reads, render observed=%s", res["reads"], res["rendered"])
+        changes = {
+            key: scopes.get(key, [])
+            for key in sorted(self._filters.keys() | scopes.keys(), key=str)
+            if self._filters.get(key, []) != scopes.get(key, [])
+        }
+        if not changes:
+            return
+        self._filters.update(dict.fromkeys(changes))  # unknown until applied: a partial failure resends them
+        self.call("applyScopes", [
+            {"level": lvl, "page": pg, "visual": vis, "filters": filters} for (lvl, pg, vis), filters in changes.items()
+        ])
+        self._filters.update(changes)
+
+    def run_one(self, run: Run, deadline: float | None = None) -> Export:
+        """Open the page and let it settle, apply every change, wait for it to render, return the exported CSV.
+
+        deadline (monotonic) bounds the whole run, default run_timeout_s from now; retries should share it.
+        Only real changes are sent, so a run that changes nothing exports at once. Filters set by an
+        earlier run but not this one are cleared, so they never leak into the next run, even after a failure.
+        """
+        self._deadline = deadline if deadline is not None else time.monotonic() + self.settings.run_timeout_s
+        try:
+            self.wait_ready()
+            self.call("setPage", run.page)  # waits for the page's first render before anything is changed
+            use_slicers = bool(self.cfg.slicer_names or run.slicers)
+            desired, own_slicers = self._plan_slicers(run) if use_slicers else ({}, [])
+            if self.cfg.hide_others:  # first, so fewer visuals re-query on the changes below
+                keep = [self._visual_id(v, run.page) for v in self.cfg.keep_visuals]
+                res = self.call("hideVisuals", run.page, [run.visual, *keep, *own_slicers])
+                log.debug("hide visuals: %s", res)
+            if use_slicers:
+                self._apply_slicers(run.page, desired)
+            self._apply_filters(run)
+            opts = {"type": run.export_type, "stableReads": self.cfg.stable_reads}
+            res = self.call("exportVisual", run.page, run.visual, opts)
+        finally:
+            self._deadline = None
+        log.info("export ok: %d reads, waited for re-render=%s", res["reads"], res["rendered"])
         return Export(res["csv"], res["rendered"])
 
     # ---- debugging -------------------------------------------------------

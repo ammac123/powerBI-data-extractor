@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     headless: bool = True
     state_path: Path = Path(".state/storage_state.json")
     timeout_s: float = 60.0
+    run_timeout_s: float = 300.0  # one export, retries included, from page switch to data
     out_dir: Path = Path("out")
     debug_dir: Path = Path("debug")
 
@@ -241,8 +242,8 @@ class RunConfig(BaseModel):
     slicers: list[SlicerSpec] = Field(default_factory=list)
     runs: list[RunNode] = Field(default_factory=list)  # empty -> a single run from the fields above
     export_type: ExportType = "Summarized"
-    settle_ms: int = 750
-    stable_reads: int = 2
+    settle_ms: int = 1500
+    stable_reads: int = 1
     workbooks: list[WorkbookSpec] = Field(default_factory=list)
 
     _normalise_slicers = field_validator("slicers", mode="before")(_slicer_specs)

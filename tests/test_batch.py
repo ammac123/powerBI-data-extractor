@@ -1,5 +1,6 @@
 import csv
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,9 +15,12 @@ class FakeSession:
         self.script = script  # label -> Export, or an Exception to raise
         self.calls: list[str] = []
         self.dumps: list[str] = []
+        self.deadlines: list[float] = []
+        self.settings = SimpleNamespace(run_timeout_s=300)
 
-    def run_one(self, run):
+    def run_one(self, run, deadline):
         self.calls.append(run.label)
+        self.deadlines.append(deadline)
         result = self.script[run.label]
         if isinstance(result, Exception):
             raise result
@@ -65,33 +69,27 @@ def test_force_reruns_ok(tmp_path):
     assert again.calls == ["a"]
 
 
-def test_identical_without_render_is_suspect_after_retry(tmp_path):
-    same = Export("a\n1\n", rendered=False)
-    session = FakeSession({"a": same, "b": same})
-    assert run_batch(session, runs("a", "b"), tmp_path) == 1
-    assert session.calls == ["a", "b", "b"]
-    assert manifest(tmp_path)["b"]["status"] == "suspect"
+def test_identical_data_is_ok_with_a_note(tmp_path):
+    unchanged = Export("a\n1\n", rendered=False)
+    session = FakeSession({"a": data(1), "b": data(1), "c": unchanged})
+    assert run_batch(session, runs("a", "b", "c"), tmp_path) == 0
+    assert session.calls == ["a", "b", "c"]
+    notes = {k: v["note"] for k, v in manifest(tmp_path).items()}
+    assert notes == {"a": "", "b": "identical to previous run's data (re-rendered)",
+                     "c": "identical to previous run's data (nothing changed)"}
 
 
-def test_identical_with_render_is_ok(tmp_path):
-    session = FakeSession({"a": data(1), "b": data(1)})
-    assert run_batch(session, runs("a", "b"), tmp_path) == 0
-    assert "identical" in manifest(tmp_path)["b"]["note"]
+def test_retries_share_one_deadline(tmp_path):
+    class FlakySession(FakeSession):
+        def run_one(self, run, deadline):
+            super().run_one(run, deadline)
+            if len(self.calls) == 1:
+                raise RuntimeError("transient")
+            return data(1)
 
-
-def test_previous_hash_resets_after_error(tmp_path):
-    same = Export("a\n1\n", rendered=False)
-    session = FakeSession({"a": same, "b": RuntimeError("x"), "c": same})
-    assert run_batch(session, runs("a", "b", "c"), tmp_path, retries=0) == 1
-    assert manifest(tmp_path)["c"]["status"] == "ok"
-
-
-def test_skipped_runs_do_not_hide_staleness(tmp_path):
-    same = Export("a\n1\n", rendered=False)
-    run_batch(FakeSession({"a": same}), runs("a"), tmp_path)
-    session = FakeSession({"b": same})
-    run_batch(session, runs("a", "b"), tmp_path)
-    assert manifest(tmp_path)["b"]["status"] == "ok"
+    session = FlakySession({"a": None})
+    assert run_batch(session, runs("a"), tmp_path) == 0
+    assert len(session.deadlines) == 2 and len(set(session.deadlines)) == 1
 
 
 def test_auth_error_aborts_batch_and_keeps_completed_runs(tmp_path):

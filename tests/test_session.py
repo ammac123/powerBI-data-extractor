@@ -1,3 +1,4 @@
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -12,9 +13,11 @@ from pbi_interaction.settings import FilterSpec, RunConfig, SlicerRef
 def make_session():
     session = object.__new__(PbiSession)
     session.cfg = RunConfig(keep_visuals=["Keep"])
-    session.settings = SimpleNamespace(timeout_s=5)
-    session._touched = set()
+    session.settings = SimpleNamespace(timeout_s=5, run_timeout_s=300)
+    session._filters = {}
     session._slicer_applied = {}
+    session._raw_applied = {}
+    session._deadline = None
     session._slicer_catalog = {}
     session._slicer_set = set()
     session.live = []
@@ -26,8 +29,6 @@ def make_session():
         session.calls.append((fn, args))
         if fn == session.fail_on:
             raise PbiError("boom")
-        if fn == "renderCount":
-            return 3
         if fn == "exportVisual":
             return {"csv": "a\n1\n", "reads": 2, "rendered": True}
         if fn == "listSlicers":
@@ -63,10 +64,18 @@ def applied(session):
 def test_call_sequence():
     session = make_session()
     export = session.run_one(run_with(report_filter(1)))
-    assert names(session) == ["waitReady", "setPage", "renderCount", "hideVisuals", "applyScopes", "exportVisual"]
-    assert session.calls[3][1] == ("P", ["V", "Keep"])
-    assert session.calls[-1][1][2]["sinceCount"] == 3
+    assert names(session) == ["waitReady", "setPage", "hideVisuals", "applyScopes", "exportVisual"]
+    assert session.calls[2][1] == ("P", ["V", "Keep"])
+    assert session.calls[-1][1][2] == {"type": "Summarized", "stableReads": 1}
     assert export.csv == "a\n1\n" and export.rendered
+
+
+def test_unchanged_filters_are_not_resent():
+    session = make_session()
+    session.run_one(run_with(report_filter(1)))
+    session.run_one(run_with(report_filter(1)))
+    session.run_one(run_with(report_filter(2)))
+    assert [s[0]["filters"][0]["values"] for s in applied(session)] == [[1], [2]]
 
 
 def test_no_filters_skips_apply_scopes():
@@ -135,7 +144,7 @@ def test_slicer_step_order():
     session = slicer_session()
     session.run_one(slicer_run(slicer("Category", ["A"])))
     assert names(session) == [
-        "waitReady", "setPage", "renderCount", "listSlicers", "applySlicers", "hideVisuals", "exportVisual",
+        "waitReady", "setPage", "listSlicers", "hideVisuals", "applySlicers", "exportVisual",
     ]
 
 
@@ -188,6 +197,15 @@ def test_run_set_slicer_stays_visible():
     session.run_one(slicer_run(slicer("Category", ["A"])))
     hide = next(args for fn, args in session.calls if fn == "hideVisuals")
     assert hide == ("P", ["V", "s_region", "s_cat"])
+
+
+def test_unchanged_raw_slicer_is_not_resent():
+    session = slicer_session(keep=())
+    raw = slicer("Category", raw={"filters": [{"k": 1}]})
+    session.run_one(slicer_run(raw))
+    session.run_one(slicer_run(raw))
+    session.run_one(slicer_run(slicer("Category", raw={"filters": [{"k": 2}]})))
+    assert [i[0]["state"]["state"] for i in sent(session)] == [{"filters": [{"k": 1}]}, {"filters": [{"k": 2}]}]
 
 
 def test_raw_ref_resolves_by_unique_title():
@@ -380,9 +398,32 @@ def test_call_configures_wrapper_before_every_call():
     session.page = SimpleNamespace(evaluate=lambda js, arg: sent.append((js, arg)))
     del session.call  # use the real bridge
     session.call("probe")
-    timeout_ms = int(session.settings.timeout_s * 1000)
-    assert sent[0][1] == [{"wrapper": session.cfg.embed_wrapper, "timeoutMs": timeout_ms}, "probe", []]
-    assert "configure(cfg)" in sent[0][0]
+    cfg = {"wrapper": session.cfg.embed_wrapper, "budgetMs": 300_000, "settleMs": session.cfg.settle_ms}
+    assert sent[0][1] == [cfg, "probe", []]
+    assert "invoke(cfg, fn, args)" in sent[0][0]
+
+
+def test_call_budget_is_the_time_left_in_the_run():
+    session = make_session()
+    sent = []
+    session.page = SimpleNamespace(evaluate=lambda js, arg: sent.append(arg[0]["budgetMs"]))
+    del session.call
+    session._deadline = time.monotonic() + 10
+    session.call("probe")
+    assert 9_000 < sent[0] <= 10_000
+    session._deadline = time.monotonic() - 1
+    with pytest.raises(PbiError, match="run timeout"):
+        session.call("probe")
+    assert len(sent) == 1
+
+
+def test_run_one_uses_and_clears_the_deadline():
+    session = make_session()
+    deadlines = []
+    inner = session.call
+    session.call = lambda fn, *args: (deadlines.append(session._deadline), inner(fn, *args))[1]
+    session.run_one(run_with(), deadline=123.0)
+    assert set(deadlines) == {123.0} and session._deadline is None
 
 
 def test_open_waits_for_report_before_yielding(monkeypatch):
