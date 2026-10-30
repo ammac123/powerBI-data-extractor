@@ -11,11 +11,19 @@ page: "Overview"
 visual: "Sales by Region"
 hide_others: true
 keep_visuals: []
+# Filters are the rare path when the report exposes a slicer; prefer slicers below.
 filters:                    # applied to every run
   - level: report
     table: Calendar
     column: Year
     values: [2025]
+
+# Friendly slicer names. Generate with `list --stub`. filter_type 1 (Basic) can be set via values; others need raw.
+# A slicer must have a default to be reset (null); one without can only be set by every run on its page.
+# slicer_names:
+#   region: {id: 0a1b2c, page: Overview, filter_type: 1, default: [All], values: [North, South, East]}
+#   year: {id: 3d4e5f, page: Overview, default: [2024]}
+# Top-level `slicers:` apply to every run, so use them only when all runs are on the slicers' page.
 
 export_type: Summarized    # or Underlying
 settle_ms: 750
@@ -44,6 +52,12 @@ runs:
   - label: by_region                   # matrix: one export per value
     matrix:
       - {level: report, table: Region, column: Name, values: [North, South, East]}
+
+  # - label: by_slicer                 # slicers: dict shorthand, list or scalar values, null = default
+  #   slicers: {region: [North, South], year: null}   # Overview page only
+  # - label: by_slicer_region          # matrix over a slicer axis
+  #   matrix:
+  #     - {slicer: region, values: [North, South, East]}
 
   - label: returns                     # different page + visual
     page: "Returns"
