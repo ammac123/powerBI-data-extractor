@@ -133,13 +133,18 @@
     caps.slicerCount = 0;
     try {
       const slicers = [];
-      for (const p of pages) slicers.push(...(await p.getVisuals()).filter(isSlicer));
+      let sample;  // state is only readable on the active page; other pages' visuals are not initialised
+      for (const p of pages) {
+        const found = (await p.getVisuals()).filter(isSlicer);
+        slicers.push(...found);
+        if (p.isActive && found.length) sample ??= found[0];
+      }
       caps.slicerCount = slicers.length;
       caps.slicerTypes = [...new Set(slicers.map((v) => v.type))];
       if (!slicers.length) return;
       caps.visual.getSlicerState = typeof slicers[0].getSlicerState === "function";
       caps.visual.setSlicerState = typeof slicers[0].setSlicerState === "function";
-      if (caps.visual.getSlicerState) caps.sampleSlicerState = await slicers[0].getSlicerState();
+      if (caps.visual.getSlicerState && sample) caps.sampleSlicerState = await sample.getSlicerState();
     } catch (e) { caps.slicerError = String(e.message || e); }
   }
 
@@ -313,5 +318,6 @@
   window.pbiTool = {
     getReport, waitReady, probe, listVisuals, listSlicers, applySlicers, setPage, hideVisuals, applyScopes, exportVisual,
     renderCount: () => state.renderCount,
+    renderState: () => ({ renders: state.renderCount, msSinceRender: performance.now() - state.lastRenderAt }),
   };
 })();
