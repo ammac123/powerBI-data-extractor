@@ -221,6 +221,7 @@ __marimo__/
 
 # Agents
 .claude/
+CLAUDE.md
 
 # Local state and outputs
 .state/
