@@ -8,10 +8,13 @@
 //   waitReady(wrapperSel, timeoutMs)  -> { pages } once the report lists pages
 //   probe(wrapperSel)                 -> which SDK APIs are available
 //   listVisuals(pageRef?)             -> [{ page, pageName, name, title, type }]
+//   listSlicers(pageRef?)             -> [{ page, pageName, name, title, type, filterType, targets, values, state, stateError? }]
 //   setPage(pageRef)                  -> activates a page
 //   hideVisuals(pageRef, keep)        -> hides every visual on the page except keep
 //   applyScopes(scopes)               -> sets (replaces) filters per report/page/visual scope
 //   exportVisual(pageRef, visualRef, opts) -> { csv, reads, rendered }; page must already be active
+//   applySlicers(pageRef, items)      -> { applied: [{ visual, ok, error?, values, filterType }] }; page must already be active
+//                                        items: [{ visual, state: { kind: "in", values } | { kind: "raw", state } }]
 //   renderCount()                     -> renders seen so far (pass as opts.sinceCount)
 (() => {
   if (window.pbiTool) return;
@@ -108,7 +111,52 @@
       if (visuals[0]) for (const k of ["exportData", "setFilters", "getFilters"]) caps.visual[k] = has(visuals[0], k);
     }
     caps.events.supportsOn = caps.report.on;
+    await probeSlicers(pages, caps);
     return caps;
+  }
+
+  const isSlicer = (v) => /slicer/i.test(v.type || "");
+  const BASIC_FILTER = 1;
+
+  async function probeSlicers(pages, caps) {
+    caps.slicerCount = 0;
+    try {
+      const slicers = [];
+      for (const p of pages) slicers.push(...(await p.getVisuals()).filter(isSlicer));
+      caps.slicerCount = slicers.length;
+      caps.slicerTypes = [...new Set(slicers.map((v) => v.type))];
+      if (!slicers.length) return;
+      caps.visual.getSlicerState = typeof slicers[0].getSlicerState === "function";
+      caps.visual.setSlicerState = typeof slicers[0].setSlicerState === "function";
+      if (caps.visual.getSlicerState) caps.sampleSlicerState = await slicers[0].getSlicerState();
+    } catch (e) { caps.slicerError = String(e.message || e); }
+  }
+
+  function summariseSlicerState(state) {
+    const filter = (state.filters || [])[0];
+    const filterType = filter ? filter.filterType : null;
+    const isIn = filterType === BASIC_FILTER && filter.operator === "In";
+    const values = isIn ? filter.values : (filter ? null : []);
+    return { filterType, targets: state.targets, values };
+  }
+
+  async function listSlicers(pageRef) {
+    const report = getReport();
+    const pages = pageRef ? [await findPage(report, pageRef)] : await report.getPages();
+    const out = [];
+    for (const p of pages) {
+      for (const v of (await p.getVisuals()).filter(isSlicer)) {
+        const row = { page: p.displayName, pageName: p.name, name: v.name, title: v.title || "", type: v.type || "" };
+        try {
+          if (typeof v.getSlicerState !== "function") throw new Error("getSlicerState unsupported by this SDK version");
+          const state = await v.getSlicerState();
+          out.push({ ...row, ...summariseSlicerState(state), state });
+        } catch (e) {
+          out.push({ ...row, filterType: null, targets: null, values: null, state: null, stateError: String(e.message || e) });
+        }
+      }
+    }
+    return out;
   }
 
   async function listVisuals(pageRef) {
@@ -171,6 +219,40 @@
     return { scopes: scopes.length };
   }
 
+  // Sets slicer states one at a time (the report is slow). An empty "in" list resets the slicer.
+  // The page must already be active; render freshness is the caller's job (waitSettled).
+  async function applySlicers(pageRef, items) {
+    const report = getReport();
+    const page = await findPage(report, pageRef);
+    const applied = [];
+    for (const item of items) {
+      const visual = await findVisual(page, item.visual);
+      if (typeof visual.setSlicerState !== "function" || typeof visual.getSlicerState !== "function") {
+        throw new Error("visual.setSlicerState is not supported by this SDK version");
+      }
+      try {
+        let next;
+        if (item.state.kind === "raw") next = item.state.state;
+        else {
+          const { targets } = await visual.getSlicerState();
+          next = {
+            targets,
+            filters: [{
+              $schema: "http://powerbi.com/product/schema#basic",
+              target: targets[0], operator: "In", values: item.state.values, filterType: BASIC_FILTER,
+            }],
+          };
+        }
+        await visual.setSlicerState(next);
+        const { filterType, values } = summariseSlicerState(await visual.getSlicerState());
+        applied.push({ visual: item.visual, ok: true, values, filterType });
+      } catch (e) {
+        applied.push({ visual: item.visual, ok: false, error: String(e.message || e), values: null, filterType: null });
+      }
+    }
+    return { applied };
+  }
+
   // ---- freshness + export ------------------------------------------------
 
   // Resolves once at least one render has happened since `sinceCount`, and then the report has been
@@ -218,7 +300,7 @@
   }
 
   window.pbiTool = {
-    getReport, waitReady, probe, listVisuals, setPage, hideVisuals, applyScopes, exportVisual,
+    getReport, waitReady, probe, listVisuals, listSlicers, applySlicers, setPage, hideVisuals, applyScopes, exportVisual,
     renderCount: () => state.renderCount,
   };
 })();
