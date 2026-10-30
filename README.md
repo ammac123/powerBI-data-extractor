@@ -65,12 +65,13 @@ uv run pbi-interaction [--config PATH] [--headed] [-v] [--version] <command>
 | `probe` | report which SDK APIs the host page offers (also written to `debug/capabilities.json`) |
 | `list` | list pages and visuals with their internal names |
 | `export` | run every export in the config (`--format xlsx` also builds workbooks, `--clean` then deletes the CSVs) |
-| `build-xlsx` | build the `workbooks` from an existing batch (`--batch NAME [--workbook NAME] [--clean]`) |
+| `build-xlsx` | build the `workbooks` from an existing batch (`--batch NAME [--workbook NAME] [--only PREFIX] [--clean]`) |
 
 `export` flags:
 
 - `--batch NAME`: output folder name; reuse a name to resume. Default is a timestamp.
-- `--only PREFIX`: only runs whose label starts with the prefix, e.g. `retail/`.
+- `--only PREFIX`: only runs whose label starts with the prefix, e.g. `retail/`. With `--format xlsx` the
+  workbooks are partial (see below).
 - `--force`: rerun runs already marked `ok`.
 - `--dry-run`: print the expanded runs without opening a browser.
 
@@ -97,6 +98,12 @@ workbooks:
 - `_notes` sheet: lists runs that were omitted (failed or not run), flagged `suspect`, or moved to their own sheet.
 - `--clean` deletes the CSVs that went into a workbook. It is refused with `--only` or `--workbook`, and is
   skipped if any run failed. Cleaned runs no longer have a CSV, so resuming that batch re-exports them.
+
+Partial builds: with `--only PREFIX` (on `export` or `build-xlsx`) the workbook covers the manifest's runs
+whose label matches the prefix, including ones exported in earlier invocations, and is written to
+`<name>.partial.xlsx`. It overwrites only other `.partial.xlsx` files, never `<name>.xlsx`. Sheets with no
+runs in scope are skipped with a warning, and `_notes` only reports runs in scope. The config is still
+validated against all runs, so glob typos fail fast.
 
 ## Output
 

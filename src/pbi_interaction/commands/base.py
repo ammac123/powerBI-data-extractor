@@ -25,3 +25,7 @@ def add_batch_arg(parser: argparse.ArgumentParser, *, required: bool = False, he
 
 def add_clean_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--clean", action="store_true", help="delete the run CSVs once workbooks are built")
+
+
+def add_only_arg(parser: argparse.ArgumentParser, *, help: str) -> None:
+    parser.add_argument("--only", help=help)

@@ -124,4 +124,24 @@ def test_clean_skipped_when_run_failed(env, fake_session, monkeypatch):
     monkeypatch.setattr(export, "build", lambda cfg, batch_dir, **k: built.append(k))
     with pytest.raises(SystemExit):
         main(["export", "--format", "xlsx", "--clean"])
-    assert built == [{"clean": False}]
+    assert built == [{"only": None, "clean": False}]
+
+
+def test_build_xlsx_only_wiring(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr("pbi_interaction.commands.build_xlsx.build", lambda cfg, d, **k: seen.append(k))
+    with pytest.raises(SystemExit):
+        main(["build-xlsx", "--batch", "x", "--only", "a"])
+    assert seen == [{"workbook": None, "only": "a", "clean": False}]
+
+
+def test_build_xlsx_clean_refused_with_only(env, capsys):
+    with pytest.raises(SystemExit):
+        main(["build-xlsx", "--batch", "x", "--only", "a", "--clean"])
+    assert "--clean cannot be combined with --only" in capsys.readouterr().err
+
+
+def test_export_dry_run_shows_partial_sheets(env, capsys):
+    with pytest.raises(SystemExit):
+        main(["export", "--dry-run", "--format", "xlsx", "--only", "b"])
+    assert "workbook w.partial: " in capsys.readouterr().out

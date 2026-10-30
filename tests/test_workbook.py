@@ -124,3 +124,44 @@ def test_clean_keeps_csvs_not_in_workbook(tmp_path):
     assert (tmp_path / "b.csv").exists()
     assert (tmp_path / "c.csv").exists()
 
+
+PARTIAL_RUNS = {"r/a": ("m\n1\n", "ok"), "r/b": ("m\n2\n", "ok"), "s/c": ("m\n3\n", "ok"), "s/d": ("", "error")}
+PARTIAL_LABELS = list(PARTIAL_RUNS)
+PARTIAL_SPEC = wb(sheet("R", ["r/*"], mode="aggregate", key=["m"]), sheet("S", ["s/*"]), unassigned="ignore")
+
+
+def test_partial_writes_partial_file_and_keeps_main(tmp_path):
+    make_batch(tmp_path, PARTIAL_RUNS)
+    (main,) = build_workbooks([PARTIAL_SPEC], PARTIAL_LABELS, tmp_path).paths
+    before = main.read_bytes()
+    (partial,) = build_workbooks([PARTIAL_SPEC], PARTIAL_LABELS, tmp_path, prefix="r/").paths
+    assert partial.name == "w.partial.xlsx"
+    assert main.read_bytes() == before
+
+
+def test_partial_overwrites_prior_partial(tmp_path):
+    make_batch(tmp_path, PARTIAL_RUNS)
+    build_workbooks([PARTIAL_SPEC], PARTIAL_LABELS, tmp_path, prefix="r/")
+    (partial,) = build_workbooks([PARTIAL_SPEC], PARTIAL_LABELS, tmp_path, prefix="s/").paths
+    assert load_workbook(partial).sheetnames == ["s_c", "_notes"]
+
+
+def test_partial_skips_out_of_scope_sheet_with_warning(tmp_path, caplog):
+    make_batch(tmp_path, PARTIAL_RUNS)
+    (partial,) = build_workbooks([PARTIAL_SPEC], PARTIAL_LABELS, tmp_path, prefix="r/").paths
+    assert load_workbook(partial).sheetnames == ["R"]
+    assert "sheet 'S' skipped" in caplog.text
+
+
+def test_partial_scope_comes_from_manifest_and_notes_only_in_scope(tmp_path):
+    make_batch(tmp_path, PARTIAL_RUNS)
+    (partial,) = build_workbooks([PARTIAL_SPEC], PARTIAL_LABELS, tmp_path, prefix="s/").paths
+    notes = load_workbook(partial)["_notes"]
+    assert [r[0].value for r in notes.iter_rows(min_row=2)] == ["s/d"]
+
+
+def test_partial_still_validates_full_config(tmp_path):
+    make_batch(tmp_path, PARTIAL_RUNS)
+    spec = wb(sheet("R", ["r/*"]), sheet("X", ["zzz"]))
+    with pytest.raises(ValueError, match="no runs match"):
+        build_workbooks([spec], PARTIAL_LABELS, tmp_path, prefix="r/")

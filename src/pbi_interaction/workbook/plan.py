@@ -17,12 +17,18 @@ class SheetPlan:
     layout: str = "merged"
 
 
-def plan_workbook(spec: WorkbookSpec, labels: list[str]) -> list[SheetPlan]:
-    """Resolve which runs land on which sheet. Raises ValueError on config/label mismatches."""
+def plan_workbook(spec: WorkbookSpec, labels: list[str], *, partial: bool = False) -> list[SheetPlan]:
+    """Resolve which runs land on which sheet. Raises ValueError on config/label mismatches.
+
+    With `partial`, sheets matching none of `labels` are skipped with a warning instead of raising.
+    """
     claimed: dict[str, str] = {}
     plans: list[SheetPlan] = []
     for sheet in spec.sheets:
         matched = [lb for lb in labels if any(fnmatch.fnmatchcase(lb, g) for g in sheet.runs)]
+        if not matched and partial:
+            log.warning("workbook '%s': sheet '%s' skipped, none of its runs are in scope", spec.name, sheet.name)
+            continue
         if not matched:
             raise ValueError(f"workbook '{spec.name}', sheet '{sheet.name}': no runs match {sheet.runs}")
         for lb in matched:

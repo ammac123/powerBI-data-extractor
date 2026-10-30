@@ -52,6 +52,7 @@ runs:
       - {level: report, table: Product, column: Category, values: [Retail]}
 
 # Optional Excel workbooks, built with `export --format xlsx` or `build-xlsx --batch NAME` (CSVs are kept; --clean deletes them).
+# With --only PREFIX the build is partial: <name>.partial.xlsx from matching runs only; the main workbook is untouched.
 # Runs are matched by label glob. Runs on no sheet get their own sheet (unassigned: sheet | ignore | error).
 #   mode: sheet      one worksheet per matched run
 #   mode: aggregate  matched runs share a sheet, joined on `key`
