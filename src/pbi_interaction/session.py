@@ -221,7 +221,7 @@ class PbiSession:
                 problems.append(f"slicer '{name}' ({ref.id}) not found")
             elif s.get("stateError"):
                 problems.append(f"slicer '{name}' state is unreadable: {s['stateError']}")
-            elif s["filterType"] != ref.filter_type:
+            elif s["filterType"] not in (None, ref.filter_type):  # None: nothing selected, type unknown
                 problems.append(f"slicer '{name}' has filterType {s['filterType']}, expected {ref.filter_type}")
             elif ref.default is not None and _norm(s.get("values")) != _norm(ref.default):
                 at, want = _show(_norm(s.get("values"))), _show(_norm(ref.default))
@@ -232,7 +232,7 @@ class PbiSession:
             except LookupError as e:
                 problems.append(str(e))
                 continue
-            if s and spec.values is not None and not s.get("stateError") and s["filterType"] != BASIC_FILTER_TYPE:
+            if s and spec.values is not None and s["filterType"] not in (None, BASIC_FILTER_TYPE):
                 problems.append(f"slicer '{spec.ref}' is not a Basic slicer; it cannot be set to values")
         return problems
 

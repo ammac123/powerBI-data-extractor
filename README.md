@@ -89,7 +89,8 @@ slicers:                           # config-wide, or on any run node
 - Slicers are validated before the first run, so a bad ref fails early. `export --dry-run` lists each run's
   slicers (name, resolved id, values or reset default).
 
-Only Basic slicers (`filter_type` 1) can be set through `values`; other types need `raw`. `filterType` codes:
+Only Basic slicers (`filter_type` 1) can be set through `values`; other types need `raw`. A slicer with nothing
+selected has no filterType (`list` shows `None`) and is treated as Basic with an empty selection. `filterType` codes:
 
 | Code | Type | Code | Type |
 | --- | --- | --- | --- |

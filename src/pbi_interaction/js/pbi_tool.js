@@ -145,6 +145,7 @@
   }
 
   const isSlicer = (v) => /slicer/i.test(v.type || "");
+  const ADVANCED_FILTER = 0;
   const BASIC_FILTER = 1;
 
   async function probeSlicers(pages, caps) {
@@ -166,8 +167,14 @@
     } catch (e) { caps.slicerError = String(e.message || e); }
   }
 
+  // A slicer with nothing selected may still report an empty Basic/Advanced filter; that is no selection
+  // (filterType null, values []), since filterType describes the current filter, not the slicer.
+  const selectsNothing = (f) =>
+    (f.filterType === BASIC_FILTER && !(f.values || []).length) ||
+    (f.filterType === ADVANCED_FILTER && !(f.conditions || []).length);
+
   function summariseSlicerState(state) {
-    const filter = (state.filters || [])[0];
+    const filter = (state.filters || []).find((f) => !selectsNothing(f));
     const filterType = filter ? filter.filterType : null;
     const isIn = filterType === BASIC_FILTER && filter.operator === "In";
     const values = isIn ? filter.values : (filter ? null : []);

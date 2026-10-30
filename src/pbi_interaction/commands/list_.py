@@ -45,17 +45,20 @@ def slicer_stub(rows: list[dict]) -> str:
     """Render a ready-to-paste `slicer_names:` block; `values:` (valid values) is left to the user."""
     lines = ["slicer_names:"]
     for name, row in zip(_unique_names(rows), rows, strict=True):
-        if row["filterType"] is None:
-            error = row.get("stateError", "state unreadable")
-            lines.append(f"  # {name}: {row['name']} on {row['page']!r} skipped: {error}")
+        if row.get("stateError"):
+            lines.append(f"  # {name}: {row['name']} on {row['page']!r} skipped: {row['stateError']}")
             continue
-        entry = {"id": row["name"], "page": row["page"], "filter_type": row["filterType"]}
-        basic = row["filterType"] == BASIC_FILTER_TYPE
+        unselected = row["filterType"] is None
+        filter_type = BASIC_FILTER_TYPE if unselected else row["filterType"]
+        entry = {"id": row["name"], "page": row["page"], "filter_type": filter_type}
+        basic = filter_type == BASIC_FILTER_TYPE
         if basic:
             entry["default"] = list(row.get("values") or [])
         body = ", ".join(f"{k}: {json.dumps(v)}" for k, v in entry.items())
         note = f"{row.get('title')!r} {row['type']} -> {_target(row)}"
-        if not basic:
+        if unselected:
+            note += "; nothing selected: assumed Basic"
+        elif not basic:
             note += f"; filter_type {row['filterType']}: no default, set via raw"
         lines.append(f"  {name}: {{{body}}}  # {note}")
     return "\n".join(lines)

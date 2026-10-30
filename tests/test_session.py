@@ -239,6 +239,12 @@ def test_validate_reports_all_problems():
     assert "not a Basic slicer" in message
 
 
+def test_validate_accepts_unselected_slicer_as_basic():
+    session = slicer_session()
+    session.live = [live_slicer("s_region", ["EU"]), live_slicer("s_cat", [], filter_type=None)]
+    session.validate_slicers([slicer_run(slicer("Category", ["A"]))])
+
+
 def test_validate_default_mismatch():
     session = slicer_session()
     session.live = [live_slicer("s_region", ["US"]), live_slicer("s_cat", [])]

@@ -163,6 +163,7 @@ def test_slicer_stub_slugs_collisions_and_defaults():
         _slicer(page="Other Page", title="Sales Region!", name="c"),
         _slicer(title="", name="d", column="Year"),
         _slicer(title="Date", name="e", filter_type=4, values=()),
+        _slicer(title="Store", name="f", filter_type=None, values=()),
     ]
     stub = slicer_stub(rows)
     assert "  sales_region: {id: \"a\", page: \"P\", filter_type: 1, default: [\"N\"]}  # " in stub
@@ -172,6 +173,8 @@ def test_slicer_stub_slugs_collisions_and_defaults():
     assert "year_slicer: {id: \"d\"" in stub
     date = next(line for line in stub.splitlines() if line.strip().startswith("date:"))
     assert "default" not in date.split("#")[0] and "set via raw" in date
+    assert "store: {id: \"f\", page: \"P\", filter_type: 1, default: []}  # " in stub
+    assert "nothing selected: assumed Basic" in stub
     assert yaml.safe_load(stub)["slicer_names"]["sales_region"]["default"] == ["N"]
 
 
