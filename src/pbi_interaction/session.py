@@ -132,16 +132,19 @@ class PbiSession:
 
     def call(self, fn: str, *args: Any) -> Any:
         try:
-            return self.page.evaluate("([fn, args]) => window.pbiTool[fn](...args)", [fn, list(args)])
+            return self.page.evaluate(
+                "([cfg, fn, args]) => (window.pbiTool.configure(cfg), window.pbiTool[fn](...args))",
+                [{"wrapper": self.cfg.embed_wrapper}, fn, list(args)],
+            )
         except PlaywrightError as e:
             raise PbiError(f"pbiTool.{fn} failed: {e.message.splitlines()[0]}") from e
 
     def wait_ready(self) -> None:
-        self.call("waitReady", self.cfg.embed_wrapper, int(self.settings.timeout_s * 1000))
+        self.call("waitReady", int(self.settings.timeout_s * 1000))
 
     def probe(self) -> dict:
         self.wait_ready()
-        return self.call("probe", self.cfg.embed_wrapper)
+        return self.call("probe")
 
     def list_visuals(self) -> list[dict]:
         self.wait_ready()

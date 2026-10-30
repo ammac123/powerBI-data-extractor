@@ -287,3 +287,14 @@ def test_validate_reports_unreadable_state():
     unreadable = {**live_slicer("s_cat", None, filter_type=None), "stateError": "no page"}
     session.live = [live_slicer("s_region", ["EU"]), unreadable]
     assert "'Category' state is unreadable: no page" in validation_error(session, slicer_run())
+
+
+def test_call_configures_wrapper_before_every_call():
+    session = make_session()
+    sent = []
+    session.page = SimpleNamespace(evaluate=lambda js, arg: sent.append((js, arg)))
+    del session.call  # use the real bridge
+    session.call("probe")
+    assert sent[0][1] == [{"wrapper": session.cfg.embed_wrapper}, "probe", []]
+    assert "configure(cfg)" in sent[0][0]
+

@@ -4,9 +4,11 @@
 // feature-detected rather than assumed.
 //
 // window.pbiTool API (pages/visuals are matched by internal name or title; duplicate titles throw):
-//   getReport(wrapperSel?)            -> SDK report for the embed wrapper
-//   waitReady(wrapperSel, timeoutMs)  -> { pages } once the report lists pages
-//   probe(wrapperSel)                 -> which SDK APIs are available
+//   configure({ wrapper })            -> sets the embed wrapper selector; Python sends it with every call
+//                                        (page state is lost on navigation)
+//   getReport()                       -> SDK report for the embed wrapper
+//   waitReady(timeoutMs)              -> { pages } once the report lists pages
+//   probe()                           -> which SDK APIs are available
 //   listVisuals(pageRef?)             -> [{ page, pageName, name, title, type }]
 //   listSlicers(pageRef?)             -> [{ page, pageName, name, title, type, filterType, targets, values, state, stateError? }]
 //   setPage(pageRef)                  -> activates a page
@@ -43,8 +45,12 @@
     return t[name] ?? (name === "Underlying" ? 1 : 0);
   };
 
-  function getReport(wrapperSel) {
-    state.wrapperSel = wrapperSel || state.wrapperSel;
+  function configure({ wrapper }) {
+    state.wrapperSel = wrapper;
+  }
+
+  function getReport() {
+    if (!state.wrapperSel) throw new Error("No embed wrapper selector configured; call configure first");
     const el = document.querySelector(state.wrapperSel);
     if (!el) throw new Error(`Embed wrapper not found: ${state.wrapperSel}`);
     if (!window.powerbi) throw new Error("window.powerbi is not defined");
@@ -64,13 +70,13 @@
     return report;
   }
 
-  async function waitReady(wrapperSel, timeoutMs = 60000) {
+  async function waitReady(timeoutMs = 60000) {
     const deadline = performance.now() + timeoutMs;
     let lastErr;
     let pagesSeenAt = null;
     while (performance.now() < deadline) {
       try {
-        const report = getReport(wrapperSel);
+        const report = getReport();
         const pages = await withTimeout(report.getPages(), GET_PAGES_TIMEOUT_MS, "getPages");
         if (pages && pages.length) {
           // Pages list before visuals initialise: also wait for a render, then for renders to go quiet.
@@ -105,7 +111,7 @@
 
   // ---- discovery ---------------------------------------------------------
 
-  async function probe(wrapperSel) {
+  async function probe() {
     const caps = { sdk: {}, report: {}, page: {}, visual: {}, events: {} };
     const ns = window["powerbi-client"];
     caps.sdk.namespaceKeys = ns ? Object.keys(ns) : null;
@@ -115,7 +121,7 @@
       .reduce((o, k) => ((o[k] = !!(sdkModels()[k])), o), {});
     caps.sdk.scriptSrcs = Array.from(document.scripts).map((s) => s.src).filter(Boolean);
 
-    const report = getReport(wrapperSel);
+    const report = getReport();
     const has = (o, k) => typeof o[k] === "function";
     for (const k of ["getPages", "getFilters", "setFilters", "updateSettings", "setVisualDisplayState", "on", "off", "getActivePage"]) {
       caps.report[k] = has(report, k);
@@ -324,6 +330,6 @@
   }
 
   window.pbiTool = {
-    getReport, waitReady, probe, listVisuals, listSlicers, applySlicers, setPage, hideVisuals, applyScopes, exportVisual,
+    configure, getReport, waitReady, probe, listVisuals, listSlicers, applySlicers, setPage, hideVisuals, applyScopes, exportVisual,
     renderCount: () => state.renderCount,  };
 })();
