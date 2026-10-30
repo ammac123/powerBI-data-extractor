@@ -44,7 +44,7 @@ The CLI reads `config.yaml` from the working directory (override with `--config`
 
 - `embed_wrapper`, `login`: CSS selectors for the embed container and the login form.
 - `page`, `visual`, `export_type` (`Summarized` or `Underlying`), `filters`: defaults inherited by every run.
-- `hide_others` / `keep_visuals`: hide every other visual on the page so only the target renders.
+- `hide_others` / `keep_visuals`: hide every other visual on the page so only the target renders (via a custom page layout, as powerbi-client 2.10 has no `setVisualDisplayState`).
 - `settle_ms`, `stable_reads`: how long the report must be quiet and how many identical consecutive reads
   are needed before data is accepted.
 - `runs`: a tree of runs. A node with `children` is a group; a node without is one export. Filters accumulate
@@ -59,6 +59,8 @@ A filter is either `{level, table, column, values}` or `{level, raw: <SDK filter
 Slicers can be driven like filters, by friendly name. Generate a starting block with
 `list --slicers [--page P]` (one line per slicer: page, title, type, filterType, target, current values, id) or
 `list --stub` (a paste-ready `slicer_names:` block with `default` set to the current selection).
+Slicer state is only readable on the active page, so these commands switch to each listed page and wait for it
+to render; a slicer that still cannot be read is shown with its error.
 
 ```yaml
 slicer_names:

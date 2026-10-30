@@ -1,18 +1,17 @@
 // Injected into the host page. Exposes window.pbiTool, a thin async API over the
-// powerbi-client SDK. Python calls these via page.evaluate and passes plain JSON.
-// Written defensively: the host site may run an old SDK, so every optional API is
-// feature-detected rather than assumed.
+// powerbi-client SDK (2.10.x). Python calls these via page.evaluate and passes plain JSON.
 //
 // window.pbiTool API (pages/visuals are matched by internal name or title; duplicate titles throw):
-//   configure({ wrapper })            -> sets the embed wrapper selector; Python sends it with every call
+//   configure({ wrapper, timeoutMs }) -> sets the embed wrapper selector and page-switch timeout; Python sends it with every call
 //                                        (page state is lost on navigation)
 //   getReport()                       -> SDK report for the embed wrapper
 //   waitReady(embedMs, renderMs)      -> { renders } once powerbi.get finds the report, then it has rendered
 //   probe()                           -> which SDK APIs are available
 //   listVisuals(pageRef?)             -> [{ page, pageName, name, title, type }]
-//   listSlicers(pageRef?)             -> [{ page, pageName, name, title, type, filterType, targets, values, state, stateError? }]
-//   setPage(pageRef)                  -> activates a page
-//   hideVisuals(pageRef, keep)        -> hides every visual on the page except keep
+//   listSlicers(pageRef?)             -> (activates each listed page first: slicer state is only readable on the active page)
+//                                        [{ page, pageName, name, title, type, filterType, targets, values, state, stateError? }]
+//   setPage(pageRef)                  -> activates a page and waits for it to render
+//   hideVisuals(pageRef, keep)        -> hides every visual on the page except keep (custom layout)
 //   applyScopes(scopes)               -> sets (replaces) filters per report/page/visual scope
 //   exportVisual(pageRef, visualRef, opts) -> { csv, reads, rendered }; page must already be active
 //   applySlicers(pageRef, items)      -> { applied: [{ visual, ok, error?, values, filterType }] }; page must already be active
@@ -23,9 +22,10 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  const state = { wrapperSel: null };
+  const state = { wrapperSel: null, timeoutMs: 60000 };
 
   const RENDER_QUIET_MS = 1500;  // no rendered event for this long counts as settled
+  const FIRST_PAGE_RENDER_MS = 5000;  // a page switch that emits no rendered event by then is taken as drawn
 
   // The SDK raises its events as bubbling CustomEvents on the embed's element. Recording them from
   // document start means a render that happens before we first look up the report is never missed.
@@ -45,18 +45,17 @@
     s.renderedSinceLoad = true;
   }, true);
 
-  // SDK enum fallbacks (numeric values from powerbi-models) for when `models` is missing.
-  const sdkModels = () => (window["powerbi-client"] && window["powerbi-client"].models) || {};
-  const HIDDEN = () => ((sdkModels().VisualContainerDisplayMode || {}).Hidden ?? 1);
-  const VISIBLE = () => ((sdkModels().VisualContainerDisplayMode || {}).Visible ?? 0);
-  const CUSTOM_LAYOUT = () => ((sdkModels().LayoutType || {}).Custom ?? 1);
+  // `models` (powerbi-models enums) is bundled with the SDK, which loads after this script.
+  const sdkModels = () => window["powerbi-client"].models;
   const exportType = (name) => {
-    const t = sdkModels().ExportDataType || {};
-    return t[name] ?? (name === "Underlying" ? 1 : 0);
+    const type = sdkModels().ExportDataType[name];
+    if (type === undefined) throw new Error(`Unknown export type: ${name}`);
+    return type;
   };
 
-  function configure({ wrapper }) {
+  function configure({ wrapper, timeoutMs }) {
     state.wrapperSel = wrapper;
+    state.timeoutMs = timeoutMs;
   }
 
   function wrapperEl() {
@@ -120,15 +119,15 @@
     const caps = { sdk: {}, report: {}, page: {}, visual: {}, events: {} };
     const ns = window["powerbi-client"];
     caps.sdk.namespaceKeys = ns ? Object.keys(ns) : null;
-    caps.sdk.version = (ns && (ns.version || ns.VERSION)) || null;
+    caps.sdk.version = (window.powerbi && window.powerbi.hpm.defaultHeaders["x-sdk-version"]) || null;
     caps.sdk.serviceClass = window.powerbi ? window.powerbi.constructor.name : null;
     caps.sdk.modelsEnums = ["ExportDataType", "VisualContainerDisplayMode", "LayoutType", "FilterType"]
-      .reduce((o, k) => ((o[k] = !!(sdkModels()[k])), o), {});
+      .reduce((o, k) => ((o[k] = !!(ns && ns.models && ns.models[k])), o), {});
     caps.sdk.scriptSrcs = Array.from(document.scripts).map((s) => s.src).filter(Boolean);
 
     const report = getReport();
     const has = (o, k) => typeof o[k] === "function";
-    for (const k of ["getPages", "getFilters", "setFilters", "updateSettings", "setVisualDisplayState", "on", "off", "getActivePage"]) {
+    for (const k of ["getPages", "getFilters", "setFilters", "updateSettings", "on", "off"]) {
       caps.report[k] = has(report, k);
     }
     const pages = await report.getPages();
@@ -180,10 +179,10 @@
     const pages = pageRef ? [await findPage(report, pageRef)] : await report.getPages();
     const out = [];
     for (const p of pages) {
+      await activate(p.name);
       for (const v of (await p.getVisuals()).filter(isSlicer)) {
         const row = { page: p.displayName, pageName: p.name, name: v.name, title: v.title || "", type: v.type || "" };
         try {
-          if (typeof v.getSlicerState !== "function") throw new Error("getSlicerState unsupported by this SDK version");
           const state = await v.getSlicerState();
           out.push({ ...row, ...summariseSlicerState(state), state });
         } catch (e) {
@@ -209,32 +208,39 @@
 
   // ---- actions -----------------------------------------------------------
 
-  async function setPage(pageRef) {
-    const report = getReport();
-    const page = await findPage(report, pageRef);
+  // A page that is not active (or not yet rendered) has uninitialised visuals: getSlicerState fails with
+  // "visual config not initialized". So switching pages waits for the new page to render.
+  // Looks the page up afresh: setActive does not update isActive on Page objects fetched earlier.
+  async function activate(pageRef) {
+    const page = await findPage(getReport(), pageRef);
+    if (page.isActive) return page;
+    const sinceCount = lifecycle(wrapperEl()).renders;
     await page.setActive();
-    return { page: page.displayName };
+    await waitSettled({ sinceCount, settleMs: RENDER_QUIET_MS, firstRenderMs: FIRST_PAGE_RENDER_MS, timeoutMs: state.timeoutMs });
+    return page;
+  }
+
+  async function setPage(pageRef) {
+    return { page: (await activate(pageRef)).displayName };
   }
 
   // Show the visuals in keep (matched by name or title) and hide every other visual on the page.
+  // This SDK has no setVisualDisplayState; visibility goes through a custom page layout.
   async function hideVisuals(pageRef, keep) {
     const report = getReport();
-    if (typeof report.setVisualDisplayState !== "function") {
-      return { skipped: "setVisualDisplayState unsupported by this SDK version" };
-    }
     const page = await findPage(report, pageRef);
-    const visuals = await page.getVisuals();
-    // Custom layout is required before display state can be changed.
-    await report.updateSettings({ layoutType: CUSTOM_LAYOUT() });
+    const { VisualContainerDisplayMode: Mode, LayoutType } = sdkModels();
+    const visualsLayout = {};
     const hidden = [];
-    for (const v of visuals) {
-      if (keep.includes(v.name) || keep.includes(v.title)) {
-        await report.setVisualDisplayState(page.name, v.name, VISIBLE());
-        continue;
-      }
-      await report.setVisualDisplayState(page.name, v.name, HIDDEN());
-      hidden.push(v.title || v.name);
+    for (const v of await page.getVisuals()) {
+      const shown = keep.includes(v.name) || keep.includes(v.title);
+      visualsLayout[v.name] = { displayState: { mode: shown ? Mode.Visible : Mode.Hidden } };
+      if (!shown) hidden.push(v.title || v.name);
     }
+    await report.updateSettings({
+      layoutType: LayoutType.Custom,
+      customLayout: { pagesLayout: { [page.name]: { visualsLayout } } },
+    });
     return { hidden };
   }
 
@@ -262,9 +268,6 @@
     const applied = [];
     for (const item of items) {
       const visual = await findVisual(page, item.visual);
-      if (typeof visual.setSlicerState !== "function" || typeof visual.getSlicerState !== "function") {
-        throw new Error("visual.setSlicerState is not supported by this SDK version");
-      }
       try {
         let next;
         if (item.state.kind === "raw") next = item.state.state;
@@ -316,7 +319,6 @@
     const report = getReport();
     const page = await findPage(report, pageRef);
     const visual = await findVisual(page, visualRef);
-    if (typeof visual.exportData !== "function") throw new Error("visual.exportData is not supported by this SDK version");
 
     const deadline = performance.now() + timeoutMs;
     const settled = await waitSettled({ sinceCount, settleMs, firstRenderMs, timeoutMs });

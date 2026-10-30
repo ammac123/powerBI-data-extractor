@@ -63,7 +63,7 @@ def applied(session):
 def test_call_sequence():
     session = make_session()
     export = session.run_one(run_with(report_filter(1)))
-    assert names(session) == ["waitReady", "renderCount", "setPage", "hideVisuals", "applyScopes", "exportVisual"]
+    assert names(session) == ["waitReady", "setPage", "renderCount", "hideVisuals", "applyScopes", "exportVisual"]
     assert session.calls[3][1] == ("P", ["V", "Keep"])
     assert session.calls[-1][1][2]["sinceCount"] == 3
     assert export.csv == "a\n1\n" and export.rendered
@@ -135,7 +135,7 @@ def test_slicer_step_order():
     session = slicer_session()
     session.run_one(slicer_run(slicer("Category", ["A"])))
     assert names(session) == [
-        "waitReady", "renderCount", "setPage", "listSlicers", "applySlicers", "hideVisuals", "exportVisual",
+        "waitReady", "setPage", "renderCount", "listSlicers", "applySlicers", "hideVisuals", "exportVisual",
     ]
 
 
@@ -290,6 +290,14 @@ def test_validate_reports_unreadable_state():
     assert "'Category' state is unreadable: no page" in validation_error(session, slicer_run())
 
 
+def test_unreadable_slicer_is_not_also_reported_as_non_basic():
+    session = slicer_session()
+    unreadable = {**live_slicer("s_region", None, filter_type=None), "stateError": "no page"}
+    session.live = [unreadable, live_slicer("s_cat", [])]
+    message = validation_error(session, slicer_run(slicer("Region", ["EU"])))
+    assert "'Region' state is unreadable" in message and "not a Basic slicer" not in message
+
+
 class FakeLocator:
     def __init__(self, present=False, visible=False):
         self.present, self.visible = present, visible
@@ -366,7 +374,8 @@ def test_call_configures_wrapper_before_every_call():
     session.page = SimpleNamespace(evaluate=lambda js, arg: sent.append((js, arg)))
     del session.call  # use the real bridge
     session.call("probe")
-    assert sent[0][1] == [{"wrapper": session.cfg.embed_wrapper}, "probe", []]
+    timeout_ms = int(session.settings.timeout_s * 1000)
+    assert sent[0][1] == [{"wrapper": session.cfg.embed_wrapper, "timeoutMs": timeout_ms}, "probe", []]
     assert "configure(cfg)" in sent[0][0]
 
 

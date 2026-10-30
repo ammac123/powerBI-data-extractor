@@ -63,9 +63,10 @@ def slicer_stub(rows: list[dict]) -> str:
 
 def _print_slicers(rows: list[dict]) -> None:
     for r in rows:
+        error = f" | state unreadable: {r['stateError']}" if r.get("stateError") else ""
         print(
             f"{r['page']!r:20} | {r['title']!r:25} | {r['type']:12} | {r['filterType']} | "
-            f"{_target(r):30} | {r['values']} | {r['name']}"
+            f"{_target(r):30} | {r['values']} | {r['name']}{error}"
         )
 
 

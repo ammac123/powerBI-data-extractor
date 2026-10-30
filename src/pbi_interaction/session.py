@@ -150,7 +150,7 @@ class PbiSession:
         try:
             return self.page.evaluate(
                 "([cfg, fn, args]) => (window.pbiTool.configure(cfg), window.pbiTool[fn](...args))",
-                [{"wrapper": self.cfg.embed_wrapper}, fn, list(args)],
+                [{"wrapper": self.cfg.embed_wrapper, "timeoutMs": int(self.settings.timeout_s * 1000)}, fn, list(args)],
             )
         except PlaywrightError as e:
             raise PbiError(f"pbiTool.{fn} failed: {e.message.splitlines()[0]}") from e
@@ -232,7 +232,7 @@ class PbiSession:
             except LookupError as e:
                 problems.append(str(e))
                 continue
-            if s and spec.values is not None and s["filterType"] != BASIC_FILTER_TYPE:
+            if s and spec.values is not None and not s.get("stateError") and s["filterType"] != BASIC_FILTER_TYPE:
                 problems.append(f"slicer '{spec.ref}' is not a Basic slicer; it cannot be set to values")
         return problems
 
@@ -318,9 +318,9 @@ class PbiSession:
         never leak from one run into the next, even after a failed run.
         """
         self.wait_ready()
-        # Mark the render counter BEFORE any change so only renders caused by this run count.
+        self.call("setPage", run.page)  # waits for the page's own render
+        # Mark the render counter BEFORE this run's changes so only renders they cause count.
         since = self.call("renderCount")
-        self.call("setPage", run.page)
         own_slicers = self._apply_slicers(run) if self.cfg.slicer_names or run.slicers else []
         if self.cfg.hide_others:
             keep = [self._visual_id(v, run.page) for v in self.cfg.keep_visuals]

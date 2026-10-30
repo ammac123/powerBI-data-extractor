@@ -5,7 +5,7 @@ import yaml
 
 from pbi_interaction import PbiError, cli, main
 from pbi_interaction.commands import COMMANDS, export
-from pbi_interaction.commands.list_ import slicer_stub
+from pbi_interaction.commands.list_ import _print_slicers, slicer_stub
 
 CONFIG = """
 page: P
@@ -254,3 +254,9 @@ def test_slicer_stub_comments_out_unreadable_slicers():
     stub = slicer_stub([_slicer(name="ok"), row])
     assert list(yaml.safe_load(stub)["slicer_names"]) == ["region"]
     assert "bad on 'P' skipped: no state" in stub
+
+
+def test_print_slicers_shows_state_error(capsys):
+    row = {**_slicer(name="bad"), "filterType": None, "values": None, "stateError": "visual config not initialized"}
+    _print_slicers([row])
+    assert "state unreadable: visual config not initialized" in capsys.readouterr().out
