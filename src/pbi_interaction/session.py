@@ -106,12 +106,26 @@ class PbiSession:
         self.page.goto(self.settings.site_url)
         state = self.settings.state_path
         if state.exists():
-            if self._embed_present(10):
+            if self._saved_session_valid():
                 log.info("reused saved session")
                 return
             log.info("saved session is no longer valid; removing it")
             state.unlink()
         self._login()
+
+    def _saved_session_valid(self) -> bool:
+        """Wait for the embed or the login form; only a visible login form invalidates the session."""
+        embed = self.page.locator(self.cfg.embed_wrapper)
+        login = self.page.locator(self.cfg.login.username)
+        try:
+            embed.or_(login).first.wait_for(state="attached", timeout=self.settings.timeout_s * 1000)
+        except PlaywrightError:
+            pass  # neither appeared: handled below
+        if embed.count():
+            return True
+        if login.is_visible():
+            return False
+        raise AuthError("Neither the embedded report nor the login form appeared; saved session kept")
 
     def _login(self) -> None:
         log.info("logging in as %s", self.settings.username)
@@ -123,6 +137,7 @@ class PbiSession:
         # Exactly one attempt: retrying a bad password risks locking the account.
         if not self._embed_present(self.settings.timeout_s):
             raise AuthError("Login did not reach the embedded report; check credentials/selectors")
+        self.wait_ready()  # the report loading proves the auth redirects have settled
         state = self.settings.state_path
         state.parent.mkdir(parents=True, exist_ok=True)
         self._context.storage_state(path=str(state))

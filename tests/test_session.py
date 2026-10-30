@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 
 import pytest
+from playwright.sync_api import Error as PlaywrightError
 
-from pbi_interaction.errors import PbiError
+from pbi_interaction.errors import AuthError, PbiError
 from pbi_interaction.runs import ResolvedSlicer, Run
 from pbi_interaction.session import PbiSession
 from pbi_interaction.settings import FilterSpec, RunConfig, SlicerRef
@@ -287,6 +288,76 @@ def test_validate_reports_unreadable_state():
     unreadable = {**live_slicer("s_cat", None, filter_type=None), "stateError": "no page"}
     session.live = [live_slicer("s_region", ["EU"]), unreadable]
     assert "'Category' state is unreadable: no page" in validation_error(session, slicer_run())
+
+
+class FakeLocator:
+    def __init__(self, present=False, visible=False):
+        self.present, self.visible = present, visible
+
+    def or_(self, other):
+        return FakeOr(self, other)
+
+    def count(self):
+        return int(self.present)
+
+    def is_visible(self):
+        return self.visible
+
+
+class FakeOr:
+    def __init__(self, *locators):
+        self.first = self
+        self.locators = locators
+
+    def wait_for(self, **kwargs):
+        if not any(loc.present or loc.visible for loc in self.locators):
+            raise PlaywrightError("Timeout")
+
+
+def auth_session(tmp_path, embed, login):
+    session = make_session()
+    state = tmp_path / "state.json"
+    state.write_text("{}")
+    session.settings = SimpleNamespace(timeout_s=5, state_path=state, site_url="http://x")
+    session.page = SimpleNamespace(
+        goto=lambda url: None, locator=lambda sel: embed if sel == session.cfg.embed_wrapper else login
+    )
+    session.logged_in = False
+    session._login = lambda: setattr(session, "logged_in", True)
+    return session, state
+
+
+def test_saved_session_reused_when_embed_appears(tmp_path):
+    session, state = auth_session(tmp_path, FakeLocator(present=True), FakeLocator())
+    session._ensure_logged_in()
+    assert state.exists() and not session.logged_in
+
+
+def test_saved_session_dropped_when_login_form_appears(tmp_path):
+    session, state = auth_session(tmp_path, FakeLocator(), FakeLocator(visible=True))
+    session._ensure_logged_in()
+    assert not state.exists() and session.logged_in
+
+
+def test_saved_session_kept_when_nothing_appears(tmp_path):
+    session, state = auth_session(tmp_path, FakeLocator(), FakeLocator())
+    with pytest.raises(AuthError):
+        session._ensure_logged_in()
+    assert state.exists() and not session.logged_in
+
+
+def test_login_waits_for_report_before_saving_state(tmp_path):
+    session = make_session()
+    state = tmp_path / "sub" / "state.json"
+    order = []
+    password = SimpleNamespace(get_secret_value=lambda: "p")
+    session.settings = SimpleNamespace(timeout_s=5, state_path=state, username="u", resolved_password=lambda: password)
+    session.page = SimpleNamespace(fill=lambda *a: None, click=lambda *a: None)
+    session._embed_present = lambda timeout: True
+    session.wait_ready = lambda: order.append("wait_ready")
+    session._context = SimpleNamespace(storage_state=lambda path: (order.append("save"), open(path, "w").close()))
+    session._login()
+    assert order == ["wait_ready", "save"]
 
 
 def test_call_configures_wrapper_before_every_call():
