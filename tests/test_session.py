@@ -369,3 +369,22 @@ def test_call_configures_wrapper_before_every_call():
     assert sent[0][1] == [{"wrapper": session.cfg.embed_wrapper}, "probe", []]
     assert "configure(cfg)" in sent[0][0]
 
+
+def test_open_waits_for_report_before_yielding(monkeypatch):
+    class FakePlaywright:
+        def __enter__(self):
+            return SimpleNamespace(chromium=SimpleNamespace(launch=lambda **_: SimpleNamespace(close=lambda: None)))
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("pbi_interaction.session.sync_playwright", FakePlaywright)
+    session = make_session()
+    session.headless = True
+    order = []
+    session._start_context = lambda: order.append("start")
+    session._ensure_logged_in = lambda: order.append("login")
+    session.wait_ready = lambda: order.append("wait_ready")
+    with session.open():
+        order.append("command")
+    assert order == ["start", "login", "wait_ready", "command"]

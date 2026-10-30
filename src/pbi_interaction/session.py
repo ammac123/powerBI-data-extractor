@@ -76,6 +76,7 @@ class PbiSession:
             try:
                 self._start_context()
                 self._ensure_logged_in()
+                self.wait_ready()
                 yield self
             except Exception:
                 self.debug_dump("failure")
@@ -155,14 +156,14 @@ class PbiSession:
             raise PbiError(f"pbiTool.{fn} failed: {e.message.splitlines()[0]}") from e
 
     def wait_ready(self) -> None:
-        self.call("waitReady", int(self.settings.timeout_s * 1000))
+        """Wait for powerbi.get to find the report, then for it to render; each step has its own timeout."""
+        timeout_ms = int(self.settings.timeout_s * 1000)
+        self.call("waitReady", timeout_ms, timeout_ms)
 
     def probe(self) -> dict:
-        self.wait_ready()
         return self.call("probe")
 
     def list_visuals(self) -> list[dict]:
-        self.wait_ready()
         return self.call("listVisuals", self.cfg.page)
 
     def list_slicers(self, page: str | None = None) -> list[dict]:

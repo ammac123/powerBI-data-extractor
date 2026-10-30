@@ -7,7 +7,7 @@
 //   configure({ wrapper })            -> sets the embed wrapper selector; Python sends it with every call
 //                                        (page state is lost on navigation)
 //   getReport()                       -> SDK report for the embed wrapper
-//   waitReady(timeoutMs)              -> { pages } once the report lists pages
+//   waitReady(embedMs, renderMs)      -> { renders } once powerbi.get finds the report, then it has rendered
 //   probe()                           -> which SDK APIs are available
 //   listVisuals(pageRef?)             -> [{ page, pageName, name, title, type }]
 //   listSlicers(pageRef?)             -> [{ page, pageName, name, title, type, filterType, targets, values, state, stateError? }]
@@ -17,23 +17,33 @@
 //   exportVisual(pageRef, visualRef, opts) -> { csv, reads, rendered }; page must already be active
 //   applySlicers(pageRef, items)      -> { applied: [{ visual, ok, error?, values, filterType }] }; page must already be active
 //                                        items: [{ visual, state: { kind: "in", values } | { kind: "raw", state } }]
-//   renderCount()                     -> renders seen so far (pass as opts.sinceCount)
+//   renderCount()                     -> rendered events seen so far (pass as opts.sinceCount)
 (() => {
   if (window.pbiTool) return;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // SDK calls made before the report iframe is ready can stay pending forever.
-  const withTimeout = (promise, ms, what) => {
-    let timer;
-    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms); });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-  };
-  const state = { report: null, wrapperSel: null, renderCount: 0, lastRenderAt: 0, listening: false };
+  const state = { wrapperSel: null };
 
-  const GET_PAGES_TIMEOUT_MS = 3000;
-  const RENDER_QUIET_MS = 1500;  // no render/loaded event for this long counts as settled
-  const NO_RENDER_EVENT_MS = 5000;  // events may predate our listener; proceed after this long without any
+  const RENDER_QUIET_MS = 1500;  // no rendered event for this long counts as settled
+
+  // The SDK raises its events as bubbling CustomEvents on the embed's element. Recording them from
+  // document start means a render that happens before we first look up the report is never missed.
+  const lifecycles = new WeakMap();
+  const lifecycle = (el) => {
+    if (!lifecycles.has(el)) lifecycles.set(el, { renders: 0, lastRenderAt: 0, renderedSinceLoad: false });
+    return lifecycles.get(el);
+  };
+  document.addEventListener("loaded", (e) => {
+    if (e instanceof CustomEvent) lifecycle(e.target).renderedSinceLoad = false;  // (re-)embedded: not drawn yet
+  }, true);
+  document.addEventListener("rendered", (e) => {
+    if (!(e instanceof CustomEvent)) return;
+    const s = lifecycle(e.target);
+    s.renders += 1;
+    s.lastRenderAt = performance.now();
+    s.renderedSinceLoad = true;
+  }, true);
 
   // SDK enum fallbacks (numeric values from powerbi-models) for when `models` is missing.
   const sdkModels = () => (window["powerbi-client"] && window["powerbi-client"].models) || {};
@@ -49,47 +59,42 @@
     state.wrapperSel = wrapper;
   }
 
-  function getReport() {
+  function wrapperEl() {
     if (!state.wrapperSel) throw new Error("No embed wrapper selector configured; call configure first");
     const el = document.querySelector(state.wrapperSel);
     if (!el) throw new Error(`Embed wrapper not found: ${state.wrapperSel}`);
+    return el;
+  }
+
+  function getReport() {
+    const el = wrapperEl();
     if (!window.powerbi) throw new Error("window.powerbi is not defined");
     const report = window.powerbi.get(el);
     if (!report) throw new Error("powerbi.get() returned nothing for the wrapper");
-    if (report !== state.report) {
-      state.report = report;
-      state.listening = false;
-    }
-    if (!state.listening && typeof report.on === "function") {
-      // Counted for freshness checks in exportVisual().
-      const bump = () => { state.renderCount += 1; state.lastRenderAt = performance.now(); };
-      report.on("rendered", bump);
-      report.on("loaded", bump);
-      state.listening = true;
-    }
     return report;
   }
 
-  async function waitReady(timeoutMs = 60000) {
+  // Polls check() until it returns something truthy; check may throw while not ready yet.
+  async function waitFor(check, timeoutMs, what) {
     const deadline = performance.now() + timeoutMs;
     let lastErr;
-    let pagesSeenAt = null;
     while (performance.now() < deadline) {
       try {
-        const report = getReport();
-        const pages = await withTimeout(report.getPages(), GET_PAGES_TIMEOUT_MS, "getPages");
-        if (pages && pages.length) {
-          // Pages list before visuals initialise: also wait for a render, then for renders to go quiet.
-          pagesSeenAt ??= performance.now();
-          const now = performance.now();
-          const quiet = state.renderCount > 0 && now - state.lastRenderAt >= RENDER_QUIET_MS;
-          const noEvents = state.renderCount === 0 && now - pagesSeenAt >= NO_RENDER_EVENT_MS;
-          if (quiet || noEvents) return { pages: pages.length };
-        }
+        const result = check();
+        if (result) return result;
       } catch (e) { lastErr = e; }
       await sleep(250);
     }
-    throw new Error(`Report not ready after ${timeoutMs}ms: ${lastErr ? lastErr.message : "no pages"}`);
+    throw new Error(`${what} not ready after ${timeoutMs}ms${lastErr ? `: ${lastErr.message}` : ""}`);
+  }
+
+  async function waitReady(embedMs = 60000, renderMs = 60000) {
+    await waitFor(getReport, embedMs, "Report embed (powerbi.get)");
+    const s = await waitFor(() => {
+      const s = lifecycle(wrapperEl());
+      return s.renderedSinceLoad && performance.now() - s.lastRenderAt >= RENDER_QUIET_MS && s;
+    }, renderMs, "Report render");
+    return { renders: s.renders };
   }
 
   // Prefers an exact internal-name match; otherwise the title must match exactly one item.
@@ -289,10 +294,11 @@
   // quiet for settleMs. If the SDK never emits (or nothing re-renders because the filter was a no-op),
   // gives up waiting for the first render after firstRenderMs and relies on the data-stability check.
   async function waitSettled({ sinceCount, settleMs, firstRenderMs, timeoutMs }) {
+    const s = lifecycle(wrapperEl());
     const start = performance.now();
     while (performance.now() - start < timeoutMs) {
-      const rendered = state.renderCount > sinceCount;
-      const quiet = performance.now() - state.lastRenderAt >= settleMs;
+      const rendered = s.renders > sinceCount;
+      const quiet = performance.now() - s.lastRenderAt >= settleMs;
       if (rendered && quiet) return { rendered: true };
       if (!rendered && performance.now() - start > firstRenderMs) return { rendered: false };
       await sleep(100);
@@ -305,7 +311,7 @@
   async function exportVisual(pageRef, visualRef, opts = {}) {
     const {
       type = "Summarized", settleMs = 750, firstRenderMs = 5000,
-      timeoutMs = 60000, stableReads = 2, pollMs = 500, sinceCount = state.renderCount,
+      timeoutMs = 60000, stableReads = 2, pollMs = 500, sinceCount = lifecycle(wrapperEl()).renders,
     } = opts;
     const report = getReport();
     const page = await findPage(report, pageRef);
@@ -331,5 +337,6 @@
 
   window.pbiTool = {
     configure, getReport, waitReady, probe, listVisuals, listSlicers, applySlicers, setPage, hideVisuals, applyScopes, exportVisual,
-    renderCount: () => state.renderCount,  };
+    renderCount: () => lifecycle(wrapperEl()).renders,
+  };
 })();
