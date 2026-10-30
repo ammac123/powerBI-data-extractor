@@ -54,6 +54,50 @@ The CLI reads `config.yaml` from the working directory (override with `--config`
 A filter is either `{level, table, column, values}` or `{level, raw: <SDK filter JSON>}`. `level` is
 `report` (default), `page` or `visual`; page and visual filters default to the run's own page/visual.
 
+### Slicers
+
+Slicers can be driven like filters, by friendly name. Generate a starting block with
+`list --slicers [--page P]` (one line per slicer: page, title, type, filterType, target, current values, id) or
+`list --stub` (a paste-ready `slicer_names:` block with `default` set to the current selection).
+
+```yaml
+slicer_names:
+  region: {id: 0a1b2c, page: Overview, filter_type: 1, default: [All], values: [North, South, East]}
+  year: {id: 3d4e5f, page: Overview, default: [2024]}
+slicers:                           # config-wide, or on any run node
+  region: [North, South]           # list or scalar values
+  year: null                       # restore the default
+```
+
+- `slicer_names`: `id` (visual name from `list`), `page`, `filter_type`, `default` (the values `null` restores;
+  generated for Basic slicers only), `values` (optional valid values; configured values are checked at config load
+  and again per page). A bare string is an id with no default. A name may have one entry per page, or a single
+  entry without `page` that matches every page (not both). A slicer ref that is not a name is taken as a raw
+  visual id or title.
+- `slicers`: dict shorthand `{name: values}`; a dict value is a raw SDK filter. A child node's setting replaces
+  its parent's for the same slicer. A `matrix` axis may be `{slicer: region, values: [...]}`.
+- `keep_visuals` is the master list: with `hide_others`, everything on the page not listed is hidden. Slicers a
+  run sets are always kept visible. Slicer names (or ids) in `keep_visuals` are resolved to their visual ids.
+- Kept slicers are synced to `default` (with or without `hide_others`), only updated when their state differs
+  from the target. A slicer a run set is reset to its `default` once a later run no longer sets it.
+- A slicer without a `default` cannot be reset: `null` is rejected, and setting it is rejected unless every run on
+  its page sets it. Setting the same slicer twice in one run (axes, aliases) is rejected.
+- A name with only paged entries must have one for each run's page.
+- The manifest records each run's slicers; changing them (or a registry id/default) reruns that run on resume.
+- Slicers are validated before the first run, so a bad ref fails early. `export --dry-run` lists each run's
+  slicers (name, resolved id, values or reset default).
+
+Only Basic slicers (`filter_type` 1) can be set through `values`; other types need `raw`. `filterType` codes:
+
+| Code | Type | Code | Type |
+| --- | --- | --- | --- |
+| 0 | Advanced | 6 | Tuple |
+| 1 | Basic | 7 | RelativeTime |
+| 2 | Unknown | 8 | Identity |
+| 3 | IncludeExclude | 9 | Hierarchy |
+| 4 | RelativeDate | 10 | HierarchyIdentity |
+| 5 | TopN | | |
+
 ## Usage
 
 ```sh
@@ -63,7 +107,7 @@ uv run pbi-interaction [--config PATH] [--headed] [-v] [--version] <command>
 | Command | Purpose |
 | --- | --- |
 | `probe` | report which SDK APIs the host page offers (also written to `debug/capabilities.json`) |
-| `list` | list pages and visuals with their internal names |
+| `list` | list pages and visuals with their internal names (`--slicers [--page P]` lists slicers, `--stub` prints a `slicer_names` block) |
 | `export` | run every export in the config (`--format xlsx` also builds workbooks, `--clean` then deletes the CSVs) |
 | `build-xlsx` | build the `workbooks` from an existing batch (`--batch NAME [--workbook NAME] [--only PREFIX] [--clean]`) |
 

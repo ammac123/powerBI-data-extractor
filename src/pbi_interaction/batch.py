@@ -15,7 +15,7 @@ from .session import PbiSession
 
 log = logging.getLogger(__name__)
 
-FIELDS = ["label", "status", "rows", "sha256", "seconds", "file", "note", "page", "visual", "filters"]
+FIELDS = ["label", "status", "rows", "sha256", "seconds", "file", "note", "page", "visual", "filters", "slicers"]
 
 
 def load_manifest(path: Path) -> dict[str, dict]:
@@ -34,13 +34,21 @@ def _write_manifest(path: Path, rows: dict[str, dict]) -> None:
     tmp.replace(path)  # rewritten after every run so a crash loses nothing
 
 
+def _slicers_json(run: Run) -> str:
+    requested = {
+        s.ref: [s.id, s.default, s.raw if s.raw is not None else "default" if s.reset else s.values]
+        for s in run.slicers
+    }
+    return json.dumps(requested, sort_keys=True, default=str) if requested else ""
+
+
 def _export_run(
     session: PbiSession, run: Run, batch_dir: Path, prev_hash: str | None, retries: int,
 ) -> tuple[dict, str | None]:
     """Export one run with retries; returns its manifest row and the data hash (None on error)."""
     row = {
         "label": run.label, "page": run.page, "visual": run.visual,
-        "filters": json.dumps([f.sdk_filter() for f in run.filters]),
+        "filters": json.dumps([f.sdk_filter() for f in run.filters]), "slicers": _slicers_json(run),
         "status": "error", "rows": "", "sha256": "", "seconds": "", "file": "", "note": "",
     }
     started = time.monotonic()
@@ -91,7 +99,8 @@ def run_batch(
 
     for i, run in enumerate(runs, 1):
         done = manifest.get(run.label, {})
-        if not force and done.get("status") == "ok" and (batch_dir / done.get("file", "")).exists():
+        unchanged = (done.get("slicers") or "") == _slicers_json(run)
+        if not force and unchanged and done.get("status") == "ok" and (batch_dir / done.get("file", "")).exists():
             log.info("[%d/%d] skip %s (already ok)", i, len(runs), run.label)
             continue
         log.info("[%d/%d] %s", i, len(runs), run.label)

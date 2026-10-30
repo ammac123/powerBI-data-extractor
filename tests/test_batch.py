@@ -1,10 +1,11 @@
 import csv
+import json
 
 import pytest
 
 from pbi_interaction.batch import run_batch
 from pbi_interaction.errors import AuthError
-from pbi_interaction.runs import Run
+from pbi_interaction.runs import ResolvedSlicer, Run
 from pbi_interaction.session import Export
 
 
@@ -100,3 +101,50 @@ def test_auth_error_aborts_batch_and_keeps_completed_runs(tmp_path):
     assert session.calls == ["a", "b"]
     assert session.dumps == []
     assert {k: v["status"] for k, v in manifest(tmp_path).items()} == {"a": "ok"}
+
+
+def slicer_runs(values):
+    slicer = ResolvedSlicer("Region", "Region", "s1", None, values, None, False, None)
+    return [Run("a", "P", "V", "Summarized", [], [slicer])]
+
+
+def test_manifest_records_slicers(tmp_path):
+    reset = ResolvedSlicer("Cat", "Cat", "s2", None, None, None, True, [])
+    raw = ResolvedSlicer("Y", None, None, None, None, {"k": 1}, False, None)
+    runs_ = [Run("a", "P", "V", "Summarized", [], [reset, raw, *slicer_runs(["EU"])[0].slicers])]
+    run_batch(FakeSession({"a": data(1)}), runs_, tmp_path)
+    assert json.loads(manifest(tmp_path)["a"]["slicers"]) == {
+        "Cat": ["s2", [], "default"], "Y": [None, None, {"k": 1}], "Region": ["s1", None, ["EU"]],
+    }
+    run_batch(FakeSession({"b": data(1)}), runs("b"), tmp_path)
+    assert manifest(tmp_path)["b"]["slicers"] == ""
+
+
+def test_changed_slicers_rerun_but_same_skip(tmp_path):
+    run_batch(FakeSession({"a": data(1)}), slicer_runs(["EU"]), tmp_path)
+    same = FakeSession({"a": data(1)})
+    run_batch(same, slicer_runs(["EU"]), tmp_path)
+    assert same.calls == []
+    changed = FakeSession({"a": data(2)})
+    run_batch(changed, slicer_runs(["US"]), tmp_path)
+    assert changed.calls == ["a"]
+
+
+def test_old_manifest_without_slicers_column_resumes(tmp_path):
+    (tmp_path / "a.csv").write_text("a\n1\n")
+    old_header = "label,status,rows,sha256,seconds,file,note,page,visual,filters"
+    (tmp_path / "manifest.csv").write_text(f"{old_header}\na,ok,1,h,1,a.csv,,P,V,[]\n")
+    session = FakeSession({"a": data(1)})
+    assert run_batch(session, runs("a"), tmp_path) == 0
+    assert session.calls == []
+
+
+def test_changed_registry_default_reruns(tmp_path):
+    def reset_run(default):
+        reset = ResolvedSlicer("Cat", "Cat", "s2", None, None, None, True, default)
+        return [Run("a", "P", "V", "Summarized", [], [reset])]
+
+    run_batch(FakeSession({"a": data(1)}), reset_run([]), tmp_path)
+    changed = FakeSession({"a": data(1)})
+    run_batch(changed, reset_run(["All"]), tmp_path)
+    assert changed.calls == ["a"]

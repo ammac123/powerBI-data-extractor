@@ -33,9 +33,17 @@ def _validate(args: argparse.Namespace, cfg: RunConfig) -> None:
             plan_workbook(spec, [r.label for r in expand(cfg)])
 
 
+def _slicer_summary(run: Run) -> str:
+    def describe(s) -> str:
+        shown = "raw" if s.raw is not None else f"reset({s.default})" if s.reset else s.values
+        return f"{s.ref}[{s.id}]={shown}" if s.id else f"{s.ref}={shown}"
+
+    return f", {len(run.slicers)} slicers: " + ", ".join(describe(s) for s in run.slicers) if run.slicers else ""
+
+
 def _print_dry_run(runs: list[Run], cfg: RunConfig, only: str | None) -> None:
     for r in runs:
-        print(f"{r.label:40} {r.page} / {r.visual}  [{len(r.filters)} filters]")
+        print(f"{r.label:40} {r.page} / {r.visual}  [{len(r.filters)} filters]{_slicer_summary(r)}")
     print(f"{len(runs)} runs")
     for wb in cfg.workbooks:
         plans = plan_workbook(wb, [r.label for r in runs], partial=only is not None)
@@ -52,6 +60,8 @@ def run(ctx: Context, args: argparse.Namespace) -> int:
         return 0
     batch_dir = ctx.settings.out_dir / (args.batch or datetime.now().strftime("%Y%m%d_%H%M%S"))
     with ctx.session() as s:
+        if cfg.slicer_names or any(r.slicers for r in runs):
+            s.validate_slicers(runs)
         failed = run_batch(s, runs, batch_dir, force=args.force)
     if args.format == "xlsx":
         build(cfg, batch_dir, only=args.only, clean=args.clean and not failed)
