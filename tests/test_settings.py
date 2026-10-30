@@ -50,6 +50,20 @@ def test_missing_password_raises_auth_error(monkeypatch):
     assert issubclass(AuthError, PbiError)
 
 
+@pytest.mark.parametrize("source", ["env", "dotenv"])
+def test_empty_password_falls_back_to_keyring(source, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PBI_SITE_URL", "https://x")
+    monkeypatch.setenv("PBI_USERNAME", "u")
+    if source == "env":
+        monkeypatch.setenv("PBI_PASSWORD", "")
+    else:
+        monkeypatch.delenv("PBI_PASSWORD", raising=False)
+        (tmp_path / ".env").write_text("PBI_PASSWORD=\n")
+    monkeypatch.setattr("pbi_interaction.settings.keyring.get_password", lambda *a: "from-keyring")
+    assert Settings().resolved_password().get_secret_value() == "from-keyring"
+
+
 def slicer_cfg(**kw):
     return RunConfig.model_validate(kw)
 

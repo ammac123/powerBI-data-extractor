@@ -22,6 +22,9 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const state = { report: null, wrapperSel: null, renderCount: 0, lastRenderAt: 0, listening: false };
 
+  const RENDER_QUIET_MS = 1500;  // no render/loaded event for this long counts as settled
+  const NO_RENDER_EVENT_MS = 5000;  // events may predate our listener; proceed after this long without any
+
   // SDK enum fallbacks (numeric values from powerbi-models) for when `models` is missing.
   const sdkModels = () => (window["powerbi-client"] && window["powerbi-client"].models) || {};
   const HIDDEN = () => ((sdkModels().VisualContainerDisplayMode || {}).Hidden ?? 1);
@@ -56,13 +59,21 @@
   async function waitReady(wrapperSel, timeoutMs = 60000) {
     const deadline = performance.now() + timeoutMs;
     let lastErr;
+    let pagesSeenAt = null;
     while (performance.now() < deadline) {
       try {
         const report = getReport(wrapperSel);
         const pages = await report.getPages();
-        if (pages && pages.length) return { pages: pages.length };
+        if (pages && pages.length) {
+          // Pages list before visuals initialise: also wait for a render, then for renders to go quiet.
+          pagesSeenAt ??= performance.now();
+          const now = performance.now();
+          const quiet = state.renderCount > 0 && now - state.lastRenderAt >= RENDER_QUIET_MS;
+          const noEvents = state.renderCount === 0 && now - pagesSeenAt >= NO_RENDER_EVENT_MS;
+          if (quiet || noEvents) return { pages: pages.length };
+        }
       } catch (e) { lastErr = e; }
-      await sleep(500);
+      await sleep(250);
     }
     throw new Error(`Report not ready after ${timeoutMs}ms: ${lastErr ? lastErr.message : "no pages"}`);
   }

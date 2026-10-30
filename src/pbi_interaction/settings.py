@@ -21,7 +21,7 @@ ExportType = Literal["Summarized", "Underlying"]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="PBI_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="PBI_", env_file=".env", env_ignore_empty=True, extra="ignore")
 
     site_url: str
     username: str
