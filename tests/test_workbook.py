@@ -1,3 +1,5 @@
+import csv
+
 import pandas as pd
 import pytest
 from openpyxl import load_workbook
@@ -16,10 +18,8 @@ def sheet(name, runs, **kw):
     return SheetSpec(name=name, runs=runs, **kw)
 
 
-def make_batch(tmp_path, runs: dict[str, tuple[str, str]], status="ok"):
+def make_batch(tmp_path, runs: dict[str, tuple[str, str]]):
     """runs: label -> (csv text, status)"""
-    import csv
-
     with (tmp_path / "manifest.csv").open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=FIELDS)
         w.writeheader()
@@ -123,3 +123,4 @@ def test_clean_keeps_csvs_not_in_workbook(tmp_path):
     assert not (tmp_path / "a.csv").exists()
     assert (tmp_path / "b.csv").exists()
     assert (tmp_path / "c.csv").exists()
+

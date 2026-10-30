@@ -1,6 +1,5 @@
 """Secrets and environment config (env vars > .env > defaults) plus the YAML run config."""
 
-import re
 from pathlib import Path
 from typing import Any, Literal, Self
 
@@ -10,6 +9,7 @@ from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .errors import AuthError
+from .sheetnames import check_sheet_name
 
 KEYRING_SERVICE = "pbi-interaction"
 BASIC_FILTER_TYPE = 1  # powerbi-models FilterType.Basic
@@ -103,18 +103,6 @@ class RunNode(BaseModel):
     filters: list[FilterSpec] = Field(default_factory=list)
     matrix: list[FilterSpec] = Field(default_factory=list)
     children: list[RunNode] = Field(default_factory=list)
-
-
-BAD_SHEET_NAME = re.compile(r"[\[\]:*?/\\]")
-SHEET_NAME_MAX = 31
-
-
-def check_sheet_name(name: str) -> str:
-    if not name or len(name) > SHEET_NAME_MAX or BAD_SHEET_NAME.search(name) or name.strip("'") != name:
-        raise ValueError(f"invalid sheet name {name!r}: 1-{SHEET_NAME_MAX} chars, none of []:*?/\\, no edge quotes")
-    if name.lower() == "history":
-        raise ValueError("sheet name 'History' is reserved by Excel")
-    return name
 
 
 class SheetSpec(BaseModel):

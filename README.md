@@ -76,6 +76,28 @@ uv run pbi-interaction [--config PATH] [--headed] [-v] [--version] <command>
 
 Exit code is 1 if any run did not finish `ok`.
 
+## Workbooks
+
+`export --format xlsx` and `build-xlsx` build Excel workbooks from the `workbooks` config:
+
+```yaml
+workbooks:
+  - name: sales_report            # -> out/<batch>/sales_report.xlsx
+    unassigned: sheet             # runs on no sheet: sheet (own sheet, default) | ignore | error
+    sheets:
+      - {name: Retail, runs: ["retail/*"], mode: aggregate, key: [Region], layout: merged}
+      - {name: Returns, runs: ["returns"]}
+```
+
+- `runs`: label globs. A run may be on only one sheet.
+- `mode: sheet` (default): one worksheet per matched run. `mode: aggregate`: matched runs share one sheet,
+  joined on `key` (required).
+- `layout: merged` (default): one table outer-joined on `key`, other columns suffixed `_<run>`; a run with
+  repeated key values gets its own sheet. `layout: blocks`: one table per run side by side.
+- `_notes` sheet: lists runs that were omitted (failed or not run), flagged `suspect`, or moved to their own sheet.
+- `--clean` deletes the CSVs that went into a workbook. It is refused with `--only` or `--workbook`, and is
+  skipped if any run failed. Cleaned runs no longer have a CSV, so resuming that batch re-exports them.
+
 ## Output
 
 ```
