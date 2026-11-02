@@ -36,6 +36,43 @@ def test_matrix_is_cartesian_product():
     assert all(len(r.filters) == 2 and all(len(f.values) == 1 for f in r.filters) for r in runs)
 
 
+def test_matrix_children_nest_under_each_value():
+    runs = expand(cfg(slicer_names=names(), runs=[{
+        "label": "y", "slicers": {"year": 2026}, "children": [{
+            "label": "f", "matrix": [{"slicer": "freq", "values": ["W", "M"]}],
+            "children": [{"label": "r", "matrix": [{"slicer": "region", "values": ["North", "South"]}]}],
+        }],
+    }]))
+    assert {r.label: [s.values[0] for s in r.slicers] for r in runs} == {
+        "y/f/W/r/North": [2026, "W", "North"],
+        "y/f/W/r/South": [2026, "W", "South"],
+        "y/f/M/r/North": [2026, "M", "North"],
+        "y/f/M/r/South": [2026, "M", "South"],
+    }
+
+
+def test_matrix_children_nest_across_filter_axes_and_levels():
+    runs = expand(cfg(runs=[{
+        "label": "a", "matrix": [basic("T", "A", 1, 2)], "children": [{
+            "label": "b", "matrix": [basic("T", "B", 3)], "children": [{
+                "label": "c", "matrix": [basic("T", "C", 4)], "filters": [basic("T", "D", 5)],
+            }],
+        }],
+    }]))
+    assert [r.label for r in runs] == ["a/1/b/3/c/4", "a/2/b/3/c/4"]
+    assert [[f.values[0] for f in r.filters] for r in runs] == [[1, 3, 5, 4], [2, 3, 5, 4]]
+
+
+def test_matrix_child_override_applies_within_its_branch():
+    runs = expand(cfg(runs=[{
+        "label": "a", "matrix": [basic("T", "A", 1, 2)],
+        "children": [{"label": "b", "filters": [basic("T", "A", 9)]}, {"label": "c"}],
+    }]))
+    assert {r.label: r.filters[0].values for r in runs} == {
+        "a/1/b": [9], "a/1/c": [1], "a/2/b": [9], "a/2/c": [2],
+    }
+
+
 def test_matrix_rejects_raw_filters():
     raw = {"raw": {"target": {"table": "T", "column": "C"}}}
     with pytest.raises(ValueError, match="matrix"):

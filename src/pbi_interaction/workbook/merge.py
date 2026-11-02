@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from ..clean import coerce_numbers
+from ..sheetnames import SHEET_NAME_MAX
 from .plan import SheetPlan
 from .write import Note, SheetEntry, Table
 
@@ -39,13 +40,25 @@ def _check_keys(frames: dict[str, pd.DataFrame], key: list[str]) -> None:
             raise ValueError(f"run '{lb}' has no key column(s) {missing}; columns: {list(df.columns)}")
 
 
+def _check_own_sheet_labels(plan: SheetPlan, frames: dict[str, pd.DataFrame], batch: str) -> None:
+    """Runs with repeated key values move to a sheet named after their label, which must fit Excel's limit."""
+    too_long = [lb for lb, df in frames.items() if len(lb) > SHEET_NAME_MAX and df.duplicated(plan.key).any()]
+    if too_long:
+        raise ValueError(
+            f"sheet '{plan.name}': {too_long} have repeated values in key {plan.key}, so need their own sheet, "
+            f"but their labels exceed {SHEET_NAME_MAX} chars. The CSVs are kept. To fix: add columns to `key` to make "
+            f"it unique, or set `layout: blocks`, then rerun `build-xlsx --batch {batch}`; "
+            f"or shorten the labels and rerun `export --batch {batch}`"
+        )
+
+
 def read_run(batch_dir: Path, file: str) -> pd.DataFrame:
     df = pd.read_csv(batch_dir / file, dtype=str, keep_default_na=False).replace("", pd.NA)
     return coerce_numbers(df)
 
 
 def sheet_tables(
-    plan: SheetPlan, frames: dict[str, pd.DataFrame], notes: list[Note],
+    plan: SheetPlan, frames: dict[str, pd.DataFrame], notes: list[Note], batch: str,
 ) -> list[SheetEntry]:
     """Turn a plan and its loaded frames into sheet entries."""
     if not plan.key or len(frames) == 1:
@@ -53,6 +66,7 @@ def sheet_tables(
     _check_keys(frames, plan.key)
     if plan.layout == "blocks":
         return [SheetEntry(plan.name, [Table(lb, df) for lb, df in frames.items()])]
+    _check_own_sheet_labels(plan, frames, batch)
     sheets: list[SheetEntry] = []
     joinable: dict[str, pd.DataFrame] = {}
     for lb, df in frames.items():

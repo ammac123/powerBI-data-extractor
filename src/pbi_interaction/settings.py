@@ -171,7 +171,8 @@ class RunNode(BaseModel):
     """A node in the run tree. Children inherit page/visual/export_type/filters from their parent.
 
     A node with no children (and no matrix) is a leaf and produces exactly one export.
-    `matrix` is shorthand for children covering the cartesian product of the axes' values.
+    `matrix` is shorthand for children covering the cartesian product of the axes' values;
+    the node's `children` then sit under each combination.
     """
 
     label: str

@@ -53,6 +53,14 @@ runs:
     matrix:
       - {level: report, table: Region, column: Name, values: [North, South, East]}
 
+  # - label: by_freq                   # children sit under each matrix value: by_freq/Weekly/by_region/North, ...
+  #   matrix:
+  #     - {slicer: frequency, values: [Weekly, Monthly]}
+  #   children:
+  #     - label: by_region
+  #       matrix:
+  #         - {slicer: region, values: [North, South, East]}
+
   # - label: by_slicer                 # slicers: dict shorthand, list or scalar values, null = default
   #   slicers: {region: [North, South], year: null}   # Overview page only
   # - label: by_slicer_region          # matrix over a slicer axis
@@ -68,6 +76,7 @@ runs:
 # Optional Excel workbooks, built with `export --format xlsx` or `build-xlsx --batch NAME` (CSVs are kept; --clean deletes them).
 # With --only PREFIX the build is partial: <name>.partial.xlsx from matching runs only; the main workbook is untouched.
 # Runs are matched by label glob. Runs on no sheet get their own sheet (unassigned: sheet | ignore | error).
+# A sheet named after its run needs a label of at most 31 characters, including its path.
 #   mode: sheet      one worksheet per matched run
 #   mode: aggregate  matched runs share a sheet, joined on `key`
 #     layout: merged  one table, outer-joined on key, other columns suffixed _<run>

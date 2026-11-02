@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass, field
 
 from ..settings import WorkbookSpec
+from ..sheetnames import SHEET_NAME_MAX
 
 log = logging.getLogger(__name__)
 
@@ -15,6 +16,16 @@ class SheetPlan:
     labels: list[str]
     key: list[str] = field(default_factory=list)  # non-empty -> aggregate
     layout: str = "merged"
+
+
+def _own_sheet(workbook: str, label: str) -> SheetPlan:
+    """A sheet named after its run, so the label must fit Excel's limit."""
+    if len(label) > SHEET_NAME_MAX:
+        raise ValueError(
+            f"workbook '{workbook}': run '{label}' needs its own sheet but its label exceeds {SHEET_NAME_MAX} chars; "
+            "shorten it, or put it on a named or aggregate sheet, or set unassigned: ignore"
+        )
+    return SheetPlan(label, [label])
 
 
 def plan_workbook(spec: WorkbookSpec, labels: list[str], *, partial: bool = False) -> list[SheetPlan]:
@@ -40,12 +51,12 @@ def plan_workbook(spec: WorkbookSpec, labels: list[str], *, partial: bool = Fals
         elif len(matched) == 1:
             plans.append(SheetPlan(sheet.name, matched))
         else:
-            plans.extend(SheetPlan(lb, [lb]) for lb in matched)
+            plans.extend(_own_sheet(spec.name, lb) for lb in matched)
 
     unassigned = [lb for lb in labels if lb not in claimed]
     if unassigned and spec.unassigned == "error":
         raise ValueError(f"workbook '{spec.name}': runs not on any sheet: {unassigned}")
     if unassigned and spec.unassigned == "sheet":
         log.warning("workbook '%s': runs not assigned to a sheet get their own: %s", spec.name, unassigned)
-        plans.extend(SheetPlan(lb, [lb]) for lb in unassigned)
+        plans.extend(_own_sheet(spec.name, lb) for lb in unassigned)
     return plans

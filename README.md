@@ -51,7 +51,9 @@ The CLI reads `config.yaml` from the working directory (override with `--config`
   (default 1). There is no fallback: a change that never renders fails at `PBI_RUN_TIMEOUT_S`.
 - `runs`: a tree of runs. A node with `children` is a group; a node without is one export. Filters accumulate
   down the tree and a child filter on the same table/column replaces its parent's. `matrix` expands to one
-  child per combination of the axes' values. Any node may override `page`, `visual` and `export_type`.
+  child per combination of the axes' values; a node's `children` sit under each combination, so
+  `matrix: [frequency]` with a child `matrix: [region]` exports every region for each frequency, and the
+  combinations become groups with no export of their own. Any node may override `page`, `visual` and `export_type`.
 
 A filter is either `{level, table, column, values}` or `{level, raw: <SDK filter JSON>}`. `level` is
 `report` (default), `page` or `visual`; page and visual filters default to the run's own page/visual.
@@ -142,8 +144,11 @@ workbooks:
 - `runs`: label globs. A run may be on only one sheet.
 - `mode: sheet` (default): one worksheet per matched run. `mode: aggregate`: matched runs share one sheet,
   joined on `key` (required).
+- A sheet named after its run (several runs matched by a `mode: sheet` entry, or `unassigned: sheet`) needs a label
+  of at most 31 characters, including its path; a longer one fails validation.
 - `layout: merged` (default): one table outer-joined on `key`, other columns suffixed `_<run>`; a run with
-  repeated key values gets its own sheet. `layout: blocks`: one table per run side by side.
+  repeated key values gets its own sheet, and the build fails if its label is over 31 characters (the CSVs are
+  kept). `layout: blocks`: one table per run side by side.
 - `_notes` sheet: lists runs that were omitted (failed or not run), flagged `suspect`, or moved to their own sheet.
 - `--clean` deletes the CSVs that went into a workbook. It is refused with `--only` or `--workbook`, and is
   skipped if any run failed. Cleaned runs no longer have a CSV, so resuming that batch re-exports them.

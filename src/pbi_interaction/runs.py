@@ -66,7 +66,7 @@ def _merge_slicers(parent: list[SlicerSpec], child: list[SlicerSpec]) -> list[Sl
     return list(merged.values())
 
 
-def _matrix_children(axes: list[FilterSpec | SlicerSpec]) -> list[RunNode]:
+def _matrix_children(axes: list[FilterSpec | SlicerSpec], children: list[RunNode]) -> list[RunNode]:
     if any(isinstance(a, FilterSpec) and a.raw is not None for a in axes):
         raise ValueError("matrix axes must use table/column/values, not raw filters")
     per_axis = [[a.model_copy(update={"values": [v]}) for v in a.values] for a in axes]
@@ -75,6 +75,7 @@ def _matrix_children(axes: list[FilterSpec | SlicerSpec]) -> list[RunNode]:
             label="_".join(safe(a.values[0]) for a in combo),
             filters=[a for a in combo if isinstance(a, FilterSpec)],
             slicers=[a for a in combo if isinstance(a, SlicerSpec)],
+            children=children,
         )
         for combo in itertools.product(*per_axis)
     ]
@@ -117,7 +118,7 @@ def expand(cfg: RunConfig) -> list[Run]:
         etype = node.export_type or etype
         filters = _merge(filters, node.filters)
         slicers = _merge_slicers(slicers, node.slicers)
-        kids = [*node.children, *(_matrix_children(node.matrix) if node.matrix else [])]
+        kids = _matrix_children(node.matrix, node.children) if node.matrix else node.children
         if kids:
             for k in kids:
                 walk(k, label, page, visual, etype, filters, slicers)

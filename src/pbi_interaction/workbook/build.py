@@ -48,7 +48,7 @@ def build_workbooks(
             frames = {lb: read_run(batch_dir, usable[lb]) for lb in plan.labels if lb in usable}
             if frames:
                 consumed.update(frames)
-                sheets += sheet_tables(plan, frames, notes)
+                sheets += sheet_tables(plan, frames, notes, batch_dir.name)
         path = batch_dir / f"{safe(spec.name)}{'.partial' if partial else ''}.xlsx"
         write_workbook(sheets, notes, path)
         paths.append(path)
