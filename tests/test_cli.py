@@ -5,7 +5,7 @@ import yaml
 
 from pbi_interaction import PbiError, cli, main
 from pbi_interaction.commands import COMMANDS, export
-from pbi_interaction.commands.list_ import _print_slicers, slicer_stub
+from pbi_interaction.commands.list_ import _print_slicers, slicer_stub, visual_stub
 
 CONFIG = """
 page: P
@@ -263,3 +263,67 @@ def test_print_slicers_shows_state_error(capsys):
     row = {**_slicer(name="bad"), "filterType": None, "values": None, "stateError": "visual config not initialized"}
     _print_slicers([row])
     assert "state unreadable: visual config not initialized" in capsys.readouterr().out
+
+
+def _visual(page="P", title="Sales", name="v1", type_="barChart"):
+    return {"page": page, "pageName": page, "name": name, "title": title, "type": type_}
+
+
+def test_visual_stub_names_and_excludes_slicers():
+    stub = visual_stub([
+        _visual(),
+        _visual(page="Other Page", name="v2"),
+        _visual(title="", name="v3", type_="lineChart"),
+        _visual(title="Region", name="s1", type_="chicletSlicer"),
+    ])
+    assert "  sales: {id: \"v1\", page: \"P\"}  # 'Sales' barChart" in stub
+    parsed = yaml.safe_load(stub)["visual_names"]
+    assert parsed == {
+        "sales": {"id": "v1", "page": "P"},
+        "sales_other_page": {"id": "v2", "page": "Other Page"},
+        "linechart_visual": {"id": "v3", "page": "P"},
+    }
+
+
+@pytest.fixture
+def visual_session(monkeypatch):
+    calls = []
+
+    class Fake:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @contextmanager
+        def open(self):
+            yield self
+
+        def list_visuals(self, page=None):
+            calls.append(page)
+            return [_visual()]
+
+    monkeypatch.setattr("pbi_interaction.context.PbiSession", Fake)
+    return calls
+
+
+@pytest.mark.parametrize(("argv", "page"), [
+    (["list", "--visual-stub"], None),  # every page, not just the config's `page`
+    (["list", "--visual-stub", "--page", "Q"], "Q"),
+    (["list"], "P"),
+])
+def test_list_visuals_page_scope(env, visual_session, argv, page):
+    with pytest.raises(SystemExit):
+        main(argv)
+    assert visual_session == [page]
+
+
+def test_dry_run_shows_visual_name(env, capsys):
+    (env / "config.yaml").write_text("""
+page: P
+visual: sales
+visual_names:
+  sales: {id: v1, page: P}
+""")
+    with pytest.raises(SystemExit):
+        main(["export", "--dry-run"])
+    out = capsys.readouterr().out
+    assert out.startswith("sales ") and "P / sales[v1]  [0 filters]" in out

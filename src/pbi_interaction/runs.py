@@ -33,6 +33,7 @@ class Run:
     export_type: ExportType
     filters: list[FilterSpec]
     slicers: list[ResolvedSlicer] = field(default_factory=list)
+    visual_name: str | None = None  # friendly name, when `visual` was resolved from visual_names
 
     def scopes(self) -> dict[ScopeKey, list[dict[str, Any]]]:
         """Group this run's SDK filters by the scope they are set on (report / page / visual)."""
@@ -81,6 +82,16 @@ def _matrix_children(axes: list[FilterSpec | SlicerSpec], children: list[RunNode
     ]
 
 
+def _resolve_visual(cfg: RunConfig, ref: str, page: str) -> str:
+    """A friendly name becomes its id; anything else stays a raw id or title."""
+    entry = cfg.visual_names.get(ref)
+    if entry is None:
+        return ref
+    if entry.page != page:
+        raise ValueError(f"visual '{ref}' is on page '{entry.page}', not '{page}'")
+    return entry.id
+
+
 def _resolve_slicer(cfg: RunConfig, spec: SlicerSpec, page: str) -> ResolvedSlicer:
     entries = cfg.slicer_names.get(spec.slicer)
     ref = None
@@ -125,11 +136,15 @@ def expand(cfg: RunConfig) -> list[Run]:
             return
         if not page or not visual:
             raise ValueError(f"run '{label}' has no page/visual (set them on the run, a parent, or at top level)")
+        visual_id = _resolve_visual(cfg, visual, page)
         # Page/visual-level filters default to the run's own page/visual.
         resolved = [
             f.model_copy(update={
                 "page": f.page or (page if f.level in ("page", "visual") else None),
-                "visual": f.visual or (visual if f.level == "visual" else None),
+                "visual": (
+                    _resolve_visual(cfg, f.visual, f.page or page) if f.visual
+                    else visual_id if f.level == "visual" else None
+                ),
             })
             for f in filters
         ]
@@ -137,7 +152,8 @@ def expand(cfg: RunConfig) -> list[Run]:
         keys = [s.id or s.ref for s in slicers_resolved]
         if len(set(keys)) != len(keys):
             raise ValueError(f"run '{label}': sets the same slicer more than once")
-        out.append(Run(label, page, visual, etype, resolved, slicers_resolved))
+        visual_name = visual if visual in cfg.visual_names else None
+        out.append(Run(label, page, visual_id, etype, resolved, slicers_resolved, visual_name))
 
     for r in roots:
         walk(r, "", cfg.page, cfg.visual, cfg.export_type, list(cfg.filters), list(cfg.slicers))

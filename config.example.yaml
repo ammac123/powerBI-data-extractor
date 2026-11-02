@@ -18,6 +18,12 @@ filters:                    # applied to every run
     column: Year
     values: [2025]
 
+# Friendly visual names, usable as `visual` (top level, runs, filters) and in `keep_visuals`.
+# Generate with `list --visual-stub`. Only id and page are allowed; a run on another page is rejected.
+# visual_names:
+#   sales_by_region: {id: 7f3a9c, page: Overview}
+#   returns_by_reason: {id: c41d02, page: Returns}
+
 # Friendly slicer names. Generate with `list --stub`. filter_type 1 (Basic) can be set via values; others need raw.
 # A slicer must have a default to be reset (null); one without can only be set by every run on its page.
 # slicer_names:

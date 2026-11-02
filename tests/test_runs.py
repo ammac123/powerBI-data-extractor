@@ -217,3 +217,46 @@ def test_child_null_resets_parent_value_and_parent_null_is_overridden():
 def test_alias_of_same_slicer_rejected():
     with pytest.raises(ValueError, match="same slicer more than once"):
         expand(cfg(slicer_names=names(), slicers={"region": "North", "r1": "South"}))
+
+
+VISUALS = {"sales": {"id": "v1", "page": "P"}, "returns": {"id": "v2", "page": "R"}}
+
+
+def test_visual_name_resolves_to_id():
+    runs = expand(cfg(visual="sales", visual_names=VISUALS, runs=[
+        {"label": "a"},
+        {"label": "b", "page": "R", "visual": "returns"},
+        {"label": "raw", "visual": "Some Title"},
+    ]))
+    assert [(r.label, r.page, r.visual, r.visual_name) for r in runs] == [
+        ("a", "P", "v1", "sales"), ("b", "R", "v2", "returns"), ("raw", "P", "Some Title", None),
+    ]
+
+
+def test_single_run_label_keeps_visual_name():
+    (run,) = expand(cfg(visual="sales", visual_names=VISUALS))
+    assert run.label == "sales" and run.visual == "v1"
+
+
+@pytest.mark.parametrize("node", [
+    {"label": "a", "visual": "returns"},  # the inherited page is not overridden
+    {"label": "a", "page": "R"},  # nor is the inherited visual
+])
+def test_visual_name_on_other_page_rejected(node):
+    with pytest.raises(ValueError, match="is on page"):
+        expand(cfg(visual="sales", visual_names=VISUALS, runs=[node]))
+
+
+def test_visual_filter_resolves_names():
+    runs = expand(cfg(visual="sales", visual_names=VISUALS, runs=[{"label": "a", "filters": [
+        basic("T", "C", 1, level="visual"),
+        basic("T", "D", 1, level="visual", visual="returns", page="R"),
+    ]}]))
+    assert set(runs[0].scopes()) == {("visual", "P", "v1"), ("visual", "R", "v2")}
+
+
+def test_visual_filter_name_on_other_page_rejected():
+    with pytest.raises(ValueError, match="is on page"):
+        expand(cfg(visual="sales", visual_names=VISUALS, runs=[
+            {"label": "a", "filters": [basic("T", "C", 1, level="visual", visual="returns")]},
+        ]))

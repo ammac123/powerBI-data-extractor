@@ -41,9 +41,13 @@ def _slicer_summary(run: Run) -> str:
     return f", {len(run.slicers)} slicers: " + ", ".join(describe(s) for s in run.slicers) if run.slicers else ""
 
 
+def _visual_summary(run: Run) -> str:
+    return f"{run.visual_name}[{run.visual}]" if run.visual_name else run.visual
+
+
 def _print_dry_run(runs: list[Run], cfg: RunConfig, only: str | None) -> None:
     for r in runs:
-        print(f"{r.label:40} {r.page} / {r.visual}  [{len(r.filters)} filters]{_slicer_summary(r)}")
+        print(f"{r.label:40} {r.page} / {_visual_summary(r)}  [{len(r.filters)} filters]{_slicer_summary(r)}")
     print(f"{len(runs)} runs")
     for wb in cfg.workbooks:
         plans = plan_workbook(wb, [r.label for r in runs], partial=only is not None)

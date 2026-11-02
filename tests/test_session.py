@@ -444,3 +444,14 @@ def test_open_waits_for_report_before_yielding(monkeypatch):
     with session.open():
         order.append("command")
     assert order == ["start", "login", "wait_ready", "command"]
+
+
+def test_keep_visuals_resolves_visual_names_for_the_run_page():
+    session = make_session()
+    session.cfg = RunConfig(
+        keep_visuals=["here", "there", "Raw"],
+        visual_names={"here": {"id": "v_here", "page": "P"}, "there": {"id": "v_there", "page": "Q"}},
+    )
+    session.run_one(run_with())
+    hide = next(args for fn, args in session.calls if fn == "hideVisuals")
+    assert hide[1] == ["V", "v_here", "there", "Raw"]

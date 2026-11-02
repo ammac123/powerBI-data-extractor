@@ -170,8 +170,8 @@ class PbiSession:
     def probe(self) -> dict:
         return self.call("probe")
 
-    def list_visuals(self) -> list[dict]:
-        return self.call("listVisuals", self.cfg.page)
+    def list_visuals(self, page: str | None = None) -> list[dict]:
+        return self.call("listVisuals", page)
 
     def list_slicers(self, page: str | None = None) -> list[dict]:
         return self.call("listSlicers", page)
@@ -185,6 +185,8 @@ class PbiSession:
         return [(name, ref) for name, ref in self._registry(page) if name in keep or ref.id in keep]
 
     def _visual_id(self, name: str, page: str) -> str:
+        if (visual := self.cfg.visual_names.get(name)) and visual.page == page:
+            return visual.id
         return next((ref.id for n, ref in self._registry(page) if n == name), name)
 
     def validate_slicers(self, runs: list[Run]) -> None:
@@ -364,7 +366,7 @@ class PbiSession:
             res = self.call("exportVisual", run.page, run.visual, opts)
         finally:
             self._deadline = None
-        log.info("export ok: %d reads, waited for re-render=%s", res["reads"], res["rendered"])
+        log.info("Export OK: successful after %d attempts", res["reads"])
         return Export(res["csv"], res["rendered"])
 
     # ---- debugging -------------------------------------------------------

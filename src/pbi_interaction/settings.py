@@ -119,6 +119,15 @@ class SlicerRef(BaseModel):
         return [v for v in values if str(v) not in valid]
 
 
+class VisualRef(BaseModel):
+    """A visual registered under a friendly name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    page: str
+
+
 class SlicerSpec(BaseModel):
     """Set a slicer to `values`, apply a `raw` SDK filter, or `reset` it to its default."""
 
@@ -239,6 +248,7 @@ class RunConfig(BaseModel):
     keep_visuals: list[str] = Field(default_factory=list)
     hide_others: bool = True
     filters: list[FilterSpec] = Field(default_factory=list)
+    visual_names: dict[str, VisualRef] = Field(default_factory=dict)
     slicer_names: dict[str, list[SlicerRef]] = Field(default_factory=dict)
     slicers: list[SlicerSpec] = Field(default_factory=list)
     runs: list[RunNode] = Field(default_factory=list)  # empty -> a single run from the fields above
@@ -260,6 +270,17 @@ class RunConfig(BaseModel):
 
         entries = {name: entry if isinstance(entry, list) else [entry] for name, entry in value.items()}
         return {name: [wrap(e) for e in entry] for name, entry in entries.items()}
+
+    @model_validator(mode="after")
+    def _check_visual_names(self) -> Self:
+        if shared := sorted(self.visual_names.keys() & self.slicer_names.keys()):
+            raise ValueError(f"names in both visual_names and slicer_names: {shared}")
+        seen: dict[tuple[str, str], str] = {}
+        for name, ref in self.visual_names.items():
+            other = seen.setdefault((ref.page, ref.id), name)
+            if other != name:
+                raise ValueError(f"visuals '{other}' and '{name}' share page and id")
+        return self
 
     @model_validator(mode="after")
     def _check_slicer_names(self) -> Self:

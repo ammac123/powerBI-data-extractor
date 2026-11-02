@@ -146,3 +146,16 @@ def test_changed_registry_default_reruns(tmp_path):
     changed = FakeSession({"a": data(1)})
     run_batch(changed, reset_run(["All"]), tmp_path)
     assert changed.calls == ["a"]
+
+
+@pytest.mark.parametrize("changed", [{"visual": "V2"}, {"page": "Q"}])
+def test_changed_page_or_visual_reruns(tmp_path, changed):
+    run_batch(FakeSession({"a": data(1)}), runs("a"), tmp_path)
+    same = FakeSession({"a": data(1)})
+    run_batch(same, runs("a"), tmp_path)
+    assert same.calls == []
+
+    moved = FakeSession({"a": data(1)})
+    fields = {"page": "P", "visual": "V", **changed}
+    run_batch(moved, [Run("a", fields["page"], fields["visual"], "Summarized", [])], tmp_path)
+    assert moved.calls == ["a"]

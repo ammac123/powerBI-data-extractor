@@ -92,7 +92,10 @@ def run_batch(
 
     for i, run in enumerate(runs, 1):
         done = manifest.get(run.label, {})
-        unchanged = (done.get("slicers") or "") == _slicers_json(run)
+        unchanged = (
+            (done.get("slicers") or "") == _slicers_json(run)
+            and done.get("page") == run.page and done.get("visual") == run.visual
+        )
         if not force and unchanged and done.get("status") == "ok" and (batch_dir / done.get("file", "")).exists():
             log.info("[%d/%d] skip %s (already ok)", i, len(runs), run.label)
             continue
