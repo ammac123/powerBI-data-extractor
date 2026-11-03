@@ -333,13 +333,16 @@
         let next;
         if (item.state.kind === "raw") next = item.state.state;
         else {
-          const { targets } = await visual.getSlicerState();
+          const { targets, filters } = await visual.getSlicerState();  // both optional in 2.10.2
+          const { values } = item.state;
+          const target = (targets || [])[0] || ((filters || [])[0] || {}).target;
+          if (!target && values.length) throw new Error("slicer state has no target to filter on; use a raw state");
           next = {
             targets,
-            filters: [{
+            filters: values.length ? [{  // no filter at all clears the slicer; an empty "In" filter breaks the report
               $schema: "http://powerbi.com/product/schema#basic",
-              target: targets[0], operator: "In", values: item.state.values, filterType: BASIC_FILTER,
-            }],
+              target, operator: "In", values, filterType: BASIC_FILTER,
+            }] : [],
           };
         }
         await visual.setSlicerState(next);
