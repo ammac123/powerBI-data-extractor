@@ -140,8 +140,11 @@ selected has no filterType (`list` shows `None`) and is treated as Basic with an
 ## Usage
 
 ```sh
-uv run pbi-interaction [--config PATH] [--headed] [-v] [--version] <command>
+uv run pbi-interaction [--config PATH] [--headed] [-v] [--log-format {text,json}] [--version] <command>
 ```
+
+`--log-format json` writes each log record to stderr as one JSON object (`ts`, `level`, `logger`, `msg`, `exc`),
+for wrappers that parse it. SIGTERM is handled like Ctrl+C: the browser is closed and the exit code is 130.
 
 | Command | Purpose |
 | --- | --- |

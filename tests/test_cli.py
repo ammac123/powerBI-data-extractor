@@ -1,3 +1,7 @@
+import json
+import logging
+import signal
+import sys
 from contextlib import contextmanager
 
 import pytest
@@ -333,3 +337,47 @@ visual_names:
         main(["export", "--dry-run"])
     out = capsys.readouterr().out
     assert out.startswith("sales ") and "P / sales[v1]  [0 filters]" in out
+
+
+def test_json_log_format(env, capsys):
+    with pytest.raises(SystemExit):
+        main(["--log-format", "json", "--config", "nope.yaml", "export", "--dry-run"])
+    entry = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert entry["level"] == "ERROR"
+    assert entry["logger"] == "pbi_interaction"
+    assert entry["msg"].startswith("error: config file not found")
+    assert entry["ts"]
+
+
+def test_json_formatter_includes_exception():
+    try:
+        raise RuntimeError("bad")
+    except RuntimeError:
+        record = logging.LogRecord("x", logging.WARNING, __file__, 1, "m %s", ("a",), sys.exc_info())
+    entry = json.loads(cli.JsonFormatter().format(record))
+    assert entry["msg"] == "m a" and "RuntimeError: bad" in entry["exc"]
+
+
+def test_interrupt_exits_130(env, monkeypatch, capsys):
+    def interrupted(ctx, args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(export, "_validate", interrupted)
+    with pytest.raises(SystemExit) as e:
+        main(["export"])
+    assert e.value.code == 130
+    assert "interrupted" in capsys.readouterr().err
+
+
+def test_sigterm_becomes_keyboard_interrupt(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(export, "_validate", lambda ctx, args: seen.append(signal.getsignal(signal.SIGTERM)))
+    monkeypatch.setattr(export, "run_batch", lambda *a, **k: 0)
+    old = signal.getsignal(signal.SIGTERM)
+    try:
+        with pytest.raises(SystemExit):
+            main(["export", "--dry-run"])
+        with pytest.raises(KeyboardInterrupt):
+            seen[0](signal.SIGTERM, None)
+    finally:
+        signal.signal(signal.SIGTERM, old)
