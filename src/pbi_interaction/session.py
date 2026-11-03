@@ -67,6 +67,7 @@ class PbiSession:
         self._deadline: float | None = None  # monotonic time the current run must finish by
         self._slicer_catalog: dict[str, list[dict]] = {}
         self._slicer_set: set[SlicerKey] = set()  # set by an earlier run: reset to default once unused
+        self._referenced: dict[str, set[str]] = {}  # page -> visual/slicer refs used by any run, for hide_others: unused
         self.page: Page
         self._context: BrowserContext
         self._browser: Browser
@@ -183,6 +184,25 @@ class PbiSession:
     def _kept_slicers(self, page: str) -> list[tuple[str, SlicerRef]]:
         keep = set(self.cfg.keep_visuals)
         return [(name, ref) for name, ref in self._registry(page) if name in keep or ref.id in keep]
+
+    def track_runs(self, runs: list[Run]) -> None:
+        """Record every visual and slicer the runs refer to, so hide_others: unused can leave them visible."""
+        for r in runs:
+            refs = self._referenced.setdefault(r.page, set())
+            refs.add(r.visual)
+            refs.update(s.id or s.ref for s in r.slicers)
+            for f in r.filters:
+                if f.level == "visual" and f.visual and (f.page or r.page) == r.page:
+                    refs.add(f.visual)
+                elif f.level == "visual" and f.visual:
+                    self._referenced.setdefault(f.page, set()).add(f.visual)
+
+    def _visible_refs(self, run: Run, own_slicers: list[str]) -> list[str]:
+        keep = [self._visual_id(v, run.page) for v in self.cfg.keep_visuals]
+        refs = [run.visual, *keep, *own_slicers]
+        if self.cfg.hide_others == "unused":
+            refs += self._referenced.get(run.page, ())
+        return refs
 
     def _visual_id(self, name: str, page: str) -> str:
         if (visual := self.cfg.visual_names.get(name)) and visual.page == page:
@@ -356,8 +376,7 @@ class PbiSession:
             use_slicers = bool(self.cfg.slicer_names or run.slicers)
             desired, own_slicers = self._plan_slicers(run) if use_slicers else ({}, [])
             if self.cfg.hide_others:  # first, so fewer visuals re-query on the changes below
-                keep = [self._visual_id(v, run.page) for v in self.cfg.keep_visuals]
-                res = self.call("hideVisuals", run.page, [run.visual, *keep, *own_slicers])
+                res = self.call("hideVisuals", run.page, self._visible_refs(run, own_slicers))
                 log.debug("hide visuals: %s", res)
             if use_slicers:
                 self._apply_slicers(run.page, desired)

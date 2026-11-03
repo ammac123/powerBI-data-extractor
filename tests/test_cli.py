@@ -48,6 +48,9 @@ def fake_session(monkeypatch):
         def open(self):
             yield self
 
+        def track_runs(self, runs):
+            pass
+
     monkeypatch.setattr("pbi_interaction.context.PbiSession", Fake)
 
 
@@ -193,6 +196,9 @@ def slicer_session(monkeypatch):
         def list_slicers(self, page=None):
             calls.append(("list_slicers", page))
             return [_slicer()]
+
+        def track_runs(self, runs):
+            pass
 
         def validate_slicers(self, runs):
             calls.append(("validate", len(runs)))

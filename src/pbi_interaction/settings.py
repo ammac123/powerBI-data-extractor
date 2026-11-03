@@ -246,7 +246,7 @@ class RunConfig(BaseModel):
     page: str | None = None
     visual: str | None = None
     keep_visuals: list[str] = Field(default_factory=list)
-    hide_others: bool = True
+    hide_others: bool | Literal["unused"] = True  # unused: hide only visuals no run or filter refers to
     filters: list[FilterSpec] = Field(default_factory=list)
     visual_names: dict[str, VisualRef] = Field(default_factory=dict)
     slicer_names: dict[str, list[SlicerRef]] = Field(default_factory=dict)

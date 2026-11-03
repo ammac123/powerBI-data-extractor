@@ -45,7 +45,10 @@ The CLI reads `config.yaml` from the working directory (override with `--config`
 
 - `embed_wrapper`, `login`: CSS selectors for the embed container and the login form.
 - `page`, `visual`, `export_type` (`Summarized` or `Underlying`), `filters`: defaults inherited by every run.
-- `hide_others` / `keep_visuals`: hide every other visual on the page so only the target renders (via a custom page layout, as powerbi-client 2.10 has no `setVisualDisplayState`).
+- `hide_others` / `keep_visuals`: hide visuals via a custom page layout, as powerbi-client 2.10 has no `setVisualDisplayState`.
+  `true` (default) hides everything on the page except the run's visual, `keep_visuals` and the slicers it sets;
+  `unused` also keeps every visual and slicer that any run, visual-level filter or `keep_visuals` refers to, and
+  hides only the rest (the layout then stays the same across runs); `false` hides nothing.
 - `settle_ms`, `stable_reads`: after a change, the export waits for the report's `rendered` event, then for
   `settle_ms` (default 1500) without another, before reading; `stable_reads` identical reads are then needed
   (default 1). There is no fallback: a change that never renders fails at `PBI_RUN_TIMEOUT_S`.

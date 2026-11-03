@@ -20,6 +20,7 @@ def make_session():
     session._deadline = None
     session._slicer_catalog = {}
     session._slicer_set = set()
+    session._referenced = {}
     session.live = []
     session.apply_override = None
     session.calls = []
@@ -455,3 +456,20 @@ def test_keep_visuals_resolves_visual_names_for_the_run_page():
     session.run_one(run_with())
     hide = next(args for fn, args in session.calls if fn == "hideVisuals")
     assert hide[1] == ["V", "v_here", "there", "Raw"]
+
+
+def test_hide_unused_keeps_every_visual_any_run_refers_to():
+    session = make_session()
+    session.cfg = RunConfig(keep_visuals=["Keep"], hide_others="unused")
+    other = Run("o", "P", "W", "Summarized", [FilterSpec(level="visual", visual="X", table="T", column="C", values=[1])])
+    session.track_runs([run_with(), other, slicer_run(slicer("Category", ["A"]))])
+    session.run_one(run_with())
+    hide = next(args for fn, args in session.calls if fn == "hideVisuals")
+    assert {"V", "W", "X", "Keep", "s_cat"} <= set(hide[1])
+
+
+def test_hide_others_false_never_hides():
+    session = make_session()
+    session.cfg = RunConfig(hide_others=False)
+    session.run_one(run_with())
+    assert "hideVisuals" not in names(session)

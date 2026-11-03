@@ -58,12 +58,14 @@ def _print_dry_run(runs: list[Run], cfg: RunConfig, only: str | None) -> None:
 def run(ctx: Context, args: argparse.Namespace) -> int:
     cfg = ctx.cfg
     _validate(args, cfg)
-    runs = [r for r in expand(cfg) if not args.only or r.label.startswith(args.only)]
+    all_runs = expand(cfg)
+    runs = [r for r in all_runs if not args.only or r.label.startswith(args.only)]
     if args.dry_run:
         _print_dry_run(runs, cfg, args.only)
         return 0
     batch_dir = ctx.settings.out_dir / (args.batch or datetime.now().strftime("%Y%m%d_%H%M%S"))
     with ctx.session() as s:
+        s.track_runs(all_runs)  # --only must not change which visuals stay visible
         if cfg.slicer_names or any(r.slicers for r in runs):
             s.validate_slicers(runs)
         failed = run_batch(s, runs, batch_dir, force=args.force)
