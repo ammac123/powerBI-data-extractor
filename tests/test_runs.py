@@ -1,6 +1,6 @@
 import pytest
 
-from pbi_interaction.runs import _merge, expand
+from pbi_interaction.runs import _merge, expand, in_scope
 from pbi_interaction.settings import FilterSpec, RunConfig
 
 
@@ -260,3 +260,11 @@ def test_visual_filter_name_on_other_page_rejected():
         expand(cfg(visual="sales", visual_names=VISUALS, runs=[
             {"label": "a", "filters": [basic("T", "C", 1, level="visual", visual="returns")]},
         ]))
+
+
+@pytest.mark.parametrize(
+    ("prefixes", "expected"),
+    [(None, True), (["a/"], True), (["b/", "a/x"], True), (["b/", "c"], False)],
+)
+def test_in_scope_matches_any_prefix(prefixes, expected):
+    assert in_scope("a/x", prefixes) is expected

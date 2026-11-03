@@ -12,7 +12,7 @@ from .base import Command, add_batch_arg, add_clean_arg, add_only_arg
 
 
 def build(
-    cfg: RunConfig, batch_dir: Path, *, workbook: str | None = None, only: str | None = None, clean: bool = False,
+    cfg: RunConfig, batch_dir: Path, *, workbook: str | None = None, only: list[str] | None = None, clean: bool = False,
 ) -> None:
     result = build_workbooks(cfg.workbooks, [r.label for r in expand(cfg)], batch_dir, workbook, only)
     for path in result.paths:
@@ -24,7 +24,9 @@ def build(
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     add_batch_arg(parser, required=True, help="batch name (folder under the output dir)")
     parser.add_argument("--workbook", help="only build the workbook with this name")
-    add_only_arg(parser, help="partial build from runs whose label starts with this prefix, to <name>.partial.xlsx")
+    add_only_arg(
+        parser, help="partial build from runs whose label starts with this prefix (repeatable), to <name>.partial.xlsx"
+    )
     add_clean_arg(parser)
 
 

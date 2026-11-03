@@ -56,6 +56,11 @@ def _merge(parent: list[FilterSpec], child: list[FilterSpec]) -> list[FilterSpec
     return list(merged.values())
 
 
+def in_scope(label: str, prefixes: list[str] | None) -> bool:
+    """`--only` filter: no prefixes means every label; otherwise a label must start with one of them."""
+    return prefixes is None or any(label.startswith(p) for p in prefixes)
+
+
 def safe(segment: str) -> str:
     return re.sub(r"[^\w.\- ]+", "_", str(segment)).strip() or "_"
 

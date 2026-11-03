@@ -141,7 +141,23 @@ def test_build_xlsx_only_wiring(env, monkeypatch):
     monkeypatch.setattr("pbi_interaction.commands.build_xlsx.build", lambda cfg, d, **k: seen.append(k))
     with pytest.raises(SystemExit):
         main(["build-xlsx", "--batch", "x", "--only", "a"])
-    assert seen == [{"workbook": None, "only": "a", "clean": False}]
+    assert seen == [{"workbook": None, "only": ["a"], "clean": False}]
+
+
+@pytest.mark.parametrize(("only", "count"), [(["a"], 1), (["a", "b"], 2), (["a", "zzz"], 1)])
+def test_export_only_is_repeatable(env, capsys, only, count):
+    argv = ["export", "--dry-run", *(arg for prefix in only for arg in ("--only", prefix))]
+    with pytest.raises(SystemExit):
+        main(argv)
+    assert f"{count} runs" in capsys.readouterr().out
+
+
+def test_build_xlsx_only_repeats(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr("pbi_interaction.commands.build_xlsx.build", lambda cfg, d, **k: seen.append(k))
+    with pytest.raises(SystemExit):
+        main(["build-xlsx", "--batch", "x", "--only", "a", "--only", "b"])
+    assert seen[0]["only"] == ["a", "b"]
 
 
 def test_build_xlsx_clean_refused_with_only(env, capsys):

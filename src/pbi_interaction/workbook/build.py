@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from ..batch import load_manifest
-from ..runs import safe
+from ..runs import in_scope, safe
 from ..settings import WorkbookSpec
 from .merge import read_run, sheet_tables
 from .plan import plan_workbook
@@ -20,14 +20,15 @@ class BuildResult(NamedTuple):
 
 def build_workbooks(
     specs: list[WorkbookSpec], labels: list[str], batch_dir: Path,
-    workbook: str | None = None, prefix: str | None = None,
+    workbook: str | None = None, prefixes: list[str] | None = None,
 ) -> BuildResult:
     """Build each workbook from the batch's CSVs; failed or missing runs are skipped and noted.
 
-    A `prefix` makes a partial build: only runs with matching labels, written to `<name>.partial.xlsx`.
+    Any `prefixes` make a partial build: only runs whose label starts with one of them,
+    written to `<name>.partial.xlsx`.
     """
-    partial = prefix is not None
-    scope = [lb for lb in labels if lb.startswith(prefix)] if partial else labels
+    partial = prefixes is not None
+    scope = [lb for lb in labels if in_scope(lb, prefixes)]
     manifest = load_manifest(batch_dir / "manifest.csv")
     usable = {
         lb: row["file"] for lb, row in manifest.items()

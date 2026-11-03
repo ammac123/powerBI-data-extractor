@@ -28,4 +28,4 @@ def add_clean_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def add_only_arg(parser: argparse.ArgumentParser, *, help: str) -> None:
-    parser.add_argument("--only", help=help)
+    parser.add_argument("--only", action="append", metavar="PREFIX", help=help)
