@@ -23,7 +23,8 @@ Copy `.env.example` to `.env` and fill it in:
 | `PBI_USERNAME` | login user (required) |
 | `PBI_PASSWORD` | optional; if unset the macOS Keychain is used |
 | `PBI_HEADLESS` | `true`/`false` (default `true`) |
-| `PBI_TIMEOUT_S` | per-wait timeout in seconds (default `60`) |
+| `PBI_TIMEOUT_S` | browser and login wait timeout in seconds (default `60`) |
+| `PBI_RUN_TIMEOUT_S` | master timeout for one export, retries included (default `300`) |
 | `PBI_STATE_PATH`, `PBI_OUT_DIR`, `PBI_DEBUG_DIR` | where session state, outputs and debug files go |
 
 To keep the password out of `.env`:
@@ -44,21 +45,58 @@ The CLI reads `config.yaml` from the working directory (override with `--config`
 
 - `embed_wrapper`, `login`: CSS selectors for the embed container and the login form.
 - `page`, `visual`, `export_type` (`Summarized` or `Underlying`), `filters`: defaults inherited by every run.
-- `hide_others` / `keep_visuals`: hide every other visual on the page so only the target renders.
-- `settle_ms`, `stable_reads`: how long the report must be quiet and how many identical consecutive reads
-  are needed before data is accepted.
+- `hide_others` / `keep_visuals`: hide visuals via a custom page layout, as powerbi-client 2.10 has no `setVisualDisplayState`.
+  `true` (default) hides everything on the page except the run's visual, `keep_visuals` and the slicers it sets;
+  `unused` also keeps every visual and slicer that any run, visual-level filter or `keep_visuals` refers to, and
+  hides only the rest (the layout then stays the same across runs); `false` hides nothing.
+- `settle_ms`, `stable_reads`: after a change, the export waits for the report's `rendered` event, then for
+  `settle_ms` (default 1500) without another, before reading; `stable_reads` identical reads are then needed
+  (default 1). There is no fallback: a change that never renders fails at `PBI_RUN_TIMEOUT_S`.
+- `on_empty` / `empty_reads`: an export with no data rows is usually a visual whose query had not returned yet.
+  With `retry` (default) it is re-read up to `empty_reads` times (default 3, one `settle_ms` apart); if it stays
+  empty the run is still written but marked `empty`. `error` fails the run instead; `accept` skips the check.
 - `runs`: a tree of runs. A node with `children` is a group; a node without is one export. Filters accumulate
   down the tree and a child filter on the same table/column replaces its parent's. `matrix` expands to one
-  child per combination of the axes' values. Any node may override `page`, `visual` and `export_type`.
+  child per combination of the axes' values; a node's `children` sit under each combination, so
+  `matrix: [frequency]` with a child `matrix: [region]` exports every region for each frequency, and the
+  combinations become groups with no export of their own. Any node may override `page`, `visual` and `export_type`.
 
 A filter is either `{level, table, column, values}` or `{level, raw: <SDK filter JSON>}`. `level` is
 `report` (default), `page` or `visual`; page and visual filters default to the run's own page/visual.
+
+### Visual names
+
+Visuals can be referred to by friendly name, so a renamed title does not break the config. Generate a block with
+`list --visual-stub [--page P]` (slicers are left out; they belong in `slicer_names`).
+
+```yaml
+visual_names:
+  sales_by_region: {id: 7f3a9c, page: Overview}
+  returns_by_reason: {id: c41d02, page: Returns}
+keep_visuals: [sales_by_region]
+runs:
+  - label: returns
+    page: Returns
+    visual: returns_by_reason
+```
+
+- An entry takes exactly `id` (visual name from `list`) and `page`. A visual on two pages needs two names, and a
+  name cannot also be in `slicer_names`.
+- A name works as `visual` at the top level, on a run node or on a visual-level filter, and in `keep_visuals`.
+  Any other value is still taken as a raw visual id or title.
+- `page` only checks: the run still gets its page from `page:`, and a name used on any other page is rejected at
+  config load (use the same spelling, which is the display name in the stub). In the config-wide `keep_visuals`,
+  a name for another page is ignored.
+- `export --dry-run` shows `name[id]`; the manifest records the id, and changing a run's page or visual id reruns
+  that run on resume.
 
 ### Slicers
 
 Slicers can be driven like filters, by friendly name. Generate a starting block with
 `list --slicers [--page P]` (one line per slicer: page, title, type, filterType, target, current values, id) or
 `list --stub` (a paste-ready `slicer_names:` block with `default` set to the current selection).
+Slicer state is only readable on the active page, so these commands switch to each listed page and wait for it
+to render; a slicer that still cannot be read is shown with its error.
 
 ```yaml
 slicer_names:
@@ -87,7 +125,8 @@ slicers:                           # config-wide, or on any run node
 - Slicers are validated before the first run, so a bad ref fails early. `export --dry-run` lists each run's
   slicers (name, resolved id, values or reset default).
 
-Only Basic slicers (`filter_type` 1) can be set through `values`; other types need `raw`. `filterType` codes:
+Only Basic slicers (`filter_type` 1) can be set through `values`; other types need `raw`. A slicer with nothing
+selected has no filterType (`list` shows `None`) and is treated as Basic with an empty selection. `filterType` codes:
 
 | Code | Type | Code | Type |
 | --- | --- | --- | --- |
@@ -101,13 +140,16 @@ Only Basic slicers (`filter_type` 1) can be set through `values`; other types ne
 ## Usage
 
 ```sh
-uv run pbi-interaction [--config PATH] [--headed] [-v] [--version] <command>
+uv run pbi-interaction [--config PATH] [--headed] [-v] [--log-format {text,json}] [--version] <command>
 ```
+
+`--log-format json` writes each log record to stderr as one JSON object (`ts`, `level`, `logger`, `msg`, `exc`),
+for wrappers that parse it. SIGTERM is handled like Ctrl+C: the browser is closed and the exit code is 130.
 
 | Command | Purpose |
 | --- | --- |
 | `probe` | report which SDK APIs the host page offers (also written to `debug/capabilities.json`) |
-| `list` | list pages and visuals with their internal names (`--slicers [--page P]` lists slicers, `--stub` prints a `slicer_names` block) |
+| `list` | list pages and visuals with their internal names (`--slicers [--page P]` lists slicers, `--stub` prints a `slicer_names` block, `--visual-stub [--page P]` a `visual_names` block) |
 | `export` | run every export in the config (`--format xlsx` also builds workbooks, `--clean` then deletes the CSVs) |
 | `build-xlsx` | build the `workbooks` from an existing batch (`--batch NAME [--workbook NAME] [--only PREFIX] [--clean]`) |
 
@@ -137,8 +179,11 @@ workbooks:
 - `runs`: label globs. A run may be on only one sheet.
 - `mode: sheet` (default): one worksheet per matched run. `mode: aggregate`: matched runs share one sheet,
   joined on `key` (required).
+- A sheet named after its run (several runs matched by a `mode: sheet` entry, or `unassigned: sheet`) needs a label
+  of at most 31 characters, including its path; a longer one fails validation.
 - `layout: merged` (default): one table outer-joined on `key`, other columns suffixed `_<run>`; a run with
-  repeated key values gets its own sheet. `layout: blocks`: one table per run side by side.
+  repeated key values gets its own sheet, and the build fails if its label is over 31 characters (the CSVs are
+  kept). `layout: blocks`: one table per run side by side.
 - `_notes` sheet: lists runs that were omitted (failed or not run), flagged `suspect`, or moved to their own sheet.
 - `--clean` deletes the CSVs that went into a workbook. It is refused with `--only` or `--workbook`, and is
   skipped if any run failed. Cleaned runs no longer have a CSV, so resuming that batch re-exports them.
@@ -158,7 +203,11 @@ out/<batch>/
 ```
 
 `manifest.csv` has one row per run: `label, status, rows, sha256, seconds, file, note, page, visual, filters`.
-Status is `ok`, `error`, or `suspect`. On resume, runs already `ok` are skipped; others are rerun.
+Status is `ok`, `empty`, `error`, or `suspect`. On resume, runs already `ok` are skipped; others are rerun.
+
+`empty` means no data rows even after re-reading. The (empty) CSV is written, the raw export is kept in
+`.raw/<label>.csv`, the run counts as not ok in the exit code, and the note says how many sibling runs in its group
+have data (an empty run beside populated ones is likely a misfire). `build-xlsx` omits `empty` runs and lists them.
 
 `suspect` means the data is byte-identical to the previous export and no re-render was observed after the
 filters changed, which is the signature of stale data. Identical data after an observed re-render is

@@ -1,5 +1,6 @@
 import csv
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,9 +15,13 @@ class FakeSession:
         self.script = script  # label -> Export, or an Exception to raise
         self.calls: list[str] = []
         self.dumps: list[str] = []
+        self.deadlines: list[float] = []
+        self.settings = SimpleNamespace(run_timeout_s=300)
+        self.cfg = SimpleNamespace(on_empty="retry")
 
-    def run_one(self, run):
+    def run_one(self, run, deadline):
         self.calls.append(run.label)
+        self.deadlines.append(deadline)
         result = self.script[run.label]
         if isinstance(result, Exception):
             raise result
@@ -65,33 +70,27 @@ def test_force_reruns_ok(tmp_path):
     assert again.calls == ["a"]
 
 
-def test_identical_without_render_is_suspect_after_retry(tmp_path):
-    same = Export("a\n1\n", rendered=False)
-    session = FakeSession({"a": same, "b": same})
-    assert run_batch(session, runs("a", "b"), tmp_path) == 1
-    assert session.calls == ["a", "b", "b"]
-    assert manifest(tmp_path)["b"]["status"] == "suspect"
+def test_identical_data_is_ok_with_a_note(tmp_path):
+    unchanged = Export("a\n1\n", rendered=False)
+    session = FakeSession({"a": data(1), "b": data(1), "c": unchanged})
+    assert run_batch(session, runs("a", "b", "c"), tmp_path) == 0
+    assert session.calls == ["a", "b", "c"]
+    notes = {k: v["note"] for k, v in manifest(tmp_path).items()}
+    assert notes == {"a": "", "b": "identical to previous run's data (re-rendered)",
+                     "c": "identical to previous run's data (nothing changed)"}
 
 
-def test_identical_with_render_is_ok(tmp_path):
-    session = FakeSession({"a": data(1), "b": data(1)})
-    assert run_batch(session, runs("a", "b"), tmp_path) == 0
-    assert "identical" in manifest(tmp_path)["b"]["note"]
+def test_retries_share_one_deadline(tmp_path):
+    class FlakySession(FakeSession):
+        def run_one(self, run, deadline):
+            super().run_one(run, deadline)
+            if len(self.calls) == 1:
+                raise RuntimeError("transient")
+            return data(1)
 
-
-def test_previous_hash_resets_after_error(tmp_path):
-    same = Export("a\n1\n", rendered=False)
-    session = FakeSession({"a": same, "b": RuntimeError("x"), "c": same})
-    assert run_batch(session, runs("a", "b", "c"), tmp_path, retries=0) == 1
-    assert manifest(tmp_path)["c"]["status"] == "ok"
-
-
-def test_skipped_runs_do_not_hide_staleness(tmp_path):
-    same = Export("a\n1\n", rendered=False)
-    run_batch(FakeSession({"a": same}), runs("a"), tmp_path)
-    session = FakeSession({"b": same})
-    run_batch(session, runs("a", "b"), tmp_path)
-    assert manifest(tmp_path)["b"]["status"] == "ok"
+    session = FlakySession({"a": None})
+    assert run_batch(session, runs("a"), tmp_path) == 0
+    assert len(session.deadlines) == 2 and len(set(session.deadlines)) == 1
 
 
 def test_auth_error_aborts_batch_and_keeps_completed_runs(tmp_path):
@@ -148,3 +147,42 @@ def test_changed_registry_default_reruns(tmp_path):
     changed = FakeSession({"a": data(1)})
     run_batch(changed, reset_run(["All"]), tmp_path)
     assert changed.calls == ["a"]
+
+
+@pytest.mark.parametrize("changed", [{"visual": "V2"}, {"page": "Q"}])
+def test_changed_page_or_visual_reruns(tmp_path, changed):
+    run_batch(FakeSession({"a": data(1)}), runs("a"), tmp_path)
+    same = FakeSession({"a": data(1)})
+    run_batch(same, runs("a"), tmp_path)
+    assert same.calls == []
+
+    moved = FakeSession({"a": data(1)})
+    fields = {"page": "P", "visual": "V", **changed}
+    run_batch(moved, [Run("a", fields["page"], fields["visual"], "Summarized", [])], tmp_path)
+    assert moved.calls == ["a"]
+
+
+def empty_export():
+    return Export("a,b\n", rendered=True, empty=True)
+
+
+def test_empty_export_is_written_flagged_and_counted_failed(tmp_path):
+    session = FakeSession({"g/x": empty_export()})
+    assert run_batch(session, runs("g/x"), tmp_path) == 1
+    row = manifest(tmp_path)["g/x"]
+    assert row["status"] == "empty" and row["rows"] == "0"
+    assert (tmp_path / "g/x.csv").exists() and (tmp_path / ".raw/g/x.csv").read_text() == "a,b\n"
+    assert "raw export: .raw/g/x.csv" in row["note"]
+
+
+def test_empty_run_notes_how_many_siblings_have_data(tmp_path):
+    session = FakeSession({"g/a": data(1), "g/b": empty_export(), "g/c": data(3)})
+    run_batch(session, runs("g/a", "g/b", "g/c"), tmp_path)
+    assert manifest(tmp_path)["g/b"]["note"].endswith("2/2 siblings have data")
+
+
+def test_empty_run_is_rerun_on_resume(tmp_path):
+    run_batch(FakeSession({"a": empty_export()}), runs("a"), tmp_path)
+    again = FakeSession({"a": data(1)})
+    assert run_batch(again, runs("a"), tmp_path) == 0
+    assert manifest(tmp_path)["a"]["status"] == "ok"

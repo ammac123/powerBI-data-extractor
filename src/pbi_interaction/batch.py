@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .clean import clean_csv
-from .errors import AuthError
+from .errors import AuthError, PbiError
 from .runs import Run
 from .session import PbiSession
 
@@ -52,28 +52,32 @@ def _export_run(
         "status": "error", "rows": "", "sha256": "", "seconds": "", "file": "", "note": "",
     }
     started = time.monotonic()
+    deadline = started + session.settings.run_timeout_s  # shared by the retries
     digest = None
     for attempt in range(retries + 1):
         try:
-            export = session.run_one(run)
+            # run_one only returns once this run's changes have re-rendered, so identical data is genuine.
+            export = session.run_one(run, deadline)
             digest = hashlib.sha256(export.csv.encode()).hexdigest()
-            # Same bytes as the previous run with no render observed is the classic stale-data symptom.
-            # Identical data after an observed render is plausible (e.g. a filter that changes nothing).
-            stale = digest == prev_hash and not export.rendered
-            if stale and attempt < retries:
-                log.warning("%s: identical to previous run with no re-render, retrying", run.label)
-                continue
             df = clean_csv(export.csv)
+            note = ""
+            empty = export.empty or (df.empty and session.cfg.on_empty != "accept")
+            if empty:
+                raw = batch_dir / ".raw" / f"{run.label}.csv"
+                raw.parent.mkdir(parents=True, exist_ok=True)
+                raw.write_text(export.csv)
+                if session.cfg.on_empty == "error":
+                    raise PbiError(f"export has no data rows (raw export: {raw.relative_to(batch_dir)})")
+                note = f"no data rows after re-reading; raw export: {raw.relative_to(batch_dir)}"
+            elif digest == prev_hash:
+                why = "re-rendered" if export.rendered else "nothing changed"
+                note = f"identical to previous run's data ({why})"
             out = batch_dir / f"{run.label}.csv"
             out.parent.mkdir(parents=True, exist_ok=True)
             df.to_csv(out, index=False)
-            note = ""
-            if digest == prev_hash:
-                detail = "with no re-render observed" if stale else "(re-rendered)"
-                note = f"identical to previous run's data {detail}"
             row.update(
-                status="suspect" if stale else "ok", rows=len(df), sha256=digest,
-                file=str(out.relative_to(batch_dir)), note=note,
+                status="empty" if empty else "ok", rows=len(df), sha256=digest, file=str(out.relative_to(batch_dir)),
+                note=note,
             )
             break
         except AuthError:
@@ -85,6 +89,23 @@ def _export_run(
             session.debug_dump(run.label.replace("/", "_"))
     row["seconds"] = round(time.monotonic() - started, 1)
     return row, digest
+
+
+def _note_empty_siblings(manifest: dict[str, dict], labels: set[str]) -> bool:
+    """Say in each empty run's note how many runs in its group have data; empty beside data suggests a misfire."""
+    groups: dict[str, list[dict]] = {}
+    for r in manifest.values():
+        if "/" in r["label"]:
+            groups.setdefault(r["label"].rpartition("/")[0], []).append(r)
+    changed = False
+    for members in groups.values():
+        with_data = sum(r["status"] == "ok" and int(r["rows"] or 0) > 0 for r in members)
+        for r in members:
+            if r["label"] in labels and r["status"] == "empty" and "siblings" not in r["note"]:
+                context = f"{with_data}/{len(members) - 1} siblings have data" if with_data else "all siblings empty"
+                r["note"] += f"; {context}"
+                changed = True
+    return changed
 
 
 def run_batch(
@@ -99,7 +120,10 @@ def run_batch(
 
     for i, run in enumerate(runs, 1):
         done = manifest.get(run.label, {})
-        unchanged = (done.get("slicers") or "") == _slicers_json(run)
+        unchanged = (
+            (done.get("slicers") or "") == _slicers_json(run)
+            and done.get("page") == run.page and done.get("visual") == run.visual
+        )
         if not force and unchanged and done.get("status") == "ok" and (batch_dir / done.get("file", "")).exists():
             log.info("[%d/%d] skip %s (already ok)", i, len(runs), run.label)
             continue
@@ -109,6 +133,8 @@ def run_batch(
         _write_manifest(manifest_path, manifest)
 
     labels = {run.label for run in runs}
+    if _note_empty_siblings(manifest, labels):
+        _write_manifest(manifest_path, manifest)
     bad = [r for r in manifest.values() if r["label"] in labels and r["status"] != "ok"]
     for r in bad:
         log.error("%s: %s %s", r["label"], r["status"], r["note"])

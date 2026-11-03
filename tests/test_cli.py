@@ -1,3 +1,7 @@
+import json
+import logging
+import signal
+import sys
 from contextlib import contextmanager
 
 import pytest
@@ -5,7 +9,7 @@ import yaml
 
 from pbi_interaction import PbiError, cli, main
 from pbi_interaction.commands import COMMANDS, export
-from pbi_interaction.commands.list_ import slicer_stub
+from pbi_interaction.commands.list_ import _print_slicers, slicer_stub, visual_stub
 
 CONFIG = """
 page: P
@@ -47,6 +51,9 @@ def fake_session(monkeypatch):
         @contextmanager
         def open(self):
             yield self
+
+        def track_runs(self, runs):
+            pass
 
     monkeypatch.setattr("pbi_interaction.context.PbiSession", Fake)
 
@@ -163,6 +170,7 @@ def test_slicer_stub_slugs_collisions_and_defaults():
         _slicer(page="Other Page", title="Sales Region!", name="c"),
         _slicer(title="", name="d", column="Year"),
         _slicer(title="Date", name="e", filter_type=4, values=()),
+        _slicer(title="Store", name="f", filter_type=None, values=()),
     ]
     stub = slicer_stub(rows)
     assert "  sales_region: {id: \"a\", page: \"P\", filter_type: 1, default: [\"N\"]}  # " in stub
@@ -172,6 +180,8 @@ def test_slicer_stub_slugs_collisions_and_defaults():
     assert "year_slicer: {id: \"d\"" in stub
     date = next(line for line in stub.splitlines() if line.strip().startswith("date:"))
     assert "default" not in date.split("#")[0] and "set via raw" in date
+    assert "store: {id: \"f\", page: \"P\", filter_type: 1, default: []}  # " in stub
+    assert "nothing selected: assumed Basic" in stub
     assert yaml.safe_load(stub)["slicer_names"]["sales_region"]["default"] == ["N"]
 
 
@@ -190,6 +200,9 @@ def slicer_session(monkeypatch):
         def list_slicers(self, page=None):
             calls.append(("list_slicers", page))
             return [_slicer()]
+
+        def track_runs(self, runs):
+            pass
 
         def validate_slicers(self, runs):
             calls.append(("validate", len(runs)))
@@ -254,3 +267,117 @@ def test_slicer_stub_comments_out_unreadable_slicers():
     stub = slicer_stub([_slicer(name="ok"), row])
     assert list(yaml.safe_load(stub)["slicer_names"]) == ["region"]
     assert "bad on 'P' skipped: no state" in stub
+
+
+def test_print_slicers_shows_state_error(capsys):
+    row = {**_slicer(name="bad"), "filterType": None, "values": None, "stateError": "visual config not initialized"}
+    _print_slicers([row])
+    assert "state unreadable: visual config not initialized" in capsys.readouterr().out
+
+
+def _visual(page="P", title="Sales", name="v1", type_="barChart"):
+    return {"page": page, "pageName": page, "name": name, "title": title, "type": type_}
+
+
+def test_visual_stub_names_and_excludes_slicers():
+    stub = visual_stub([
+        _visual(),
+        _visual(page="Other Page", name="v2"),
+        _visual(title="", name="v3", type_="lineChart"),
+        _visual(title="Region", name="s1", type_="chicletSlicer"),
+    ])
+    assert "  sales: {id: \"v1\", page: \"P\"}  # 'Sales' barChart" in stub
+    parsed = yaml.safe_load(stub)["visual_names"]
+    assert parsed == {
+        "sales": {"id": "v1", "page": "P"},
+        "sales_other_page": {"id": "v2", "page": "Other Page"},
+        "linechart_visual": {"id": "v3", "page": "P"},
+    }
+
+
+@pytest.fixture
+def visual_session(monkeypatch):
+    calls = []
+
+    class Fake:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        @contextmanager
+        def open(self):
+            yield self
+
+        def list_visuals(self, page=None):
+            calls.append(page)
+            return [_visual()]
+
+    monkeypatch.setattr("pbi_interaction.context.PbiSession", Fake)
+    return calls
+
+
+@pytest.mark.parametrize(("argv", "page"), [
+    (["list", "--visual-stub"], None),  # every page, not just the config's `page`
+    (["list", "--visual-stub", "--page", "Q"], "Q"),
+    (["list"], "P"),
+])
+def test_list_visuals_page_scope(env, visual_session, argv, page):
+    with pytest.raises(SystemExit):
+        main(argv)
+    assert visual_session == [page]
+
+
+def test_dry_run_shows_visual_name(env, capsys):
+    (env / "config.yaml").write_text("""
+page: P
+visual: sales
+visual_names:
+  sales: {id: v1, page: P}
+""")
+    with pytest.raises(SystemExit):
+        main(["export", "--dry-run"])
+    out = capsys.readouterr().out
+    assert out.startswith("sales ") and "P / sales[v1]  [0 filters]" in out
+
+
+def test_json_log_format(env, capsys):
+    with pytest.raises(SystemExit):
+        main(["--log-format", "json", "--config", "nope.yaml", "export", "--dry-run"])
+    entry = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+    assert entry["level"] == "ERROR"
+    assert entry["logger"] == "pbi_interaction"
+    assert entry["msg"].startswith("error: config file not found")
+    assert entry["ts"]
+
+
+def test_json_formatter_includes_exception():
+    try:
+        raise RuntimeError("bad")
+    except RuntimeError:
+        record = logging.LogRecord("x", logging.WARNING, __file__, 1, "m %s", ("a",), sys.exc_info())
+    entry = json.loads(cli.JsonFormatter().format(record))
+    assert entry["msg"] == "m a" and "RuntimeError: bad" in entry["exc"]
+
+
+def test_interrupt_exits_130(env, monkeypatch, capsys):
+    def interrupted(ctx, args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(export, "_validate", interrupted)
+    with pytest.raises(SystemExit) as e:
+        main(["export"])
+    assert e.value.code == 130
+    assert "interrupted" in capsys.readouterr().err
+
+
+def test_sigterm_becomes_keyboard_interrupt(env, monkeypatch):
+    seen = []
+    monkeypatch.setattr(export, "_validate", lambda ctx, args: seen.append(signal.getsignal(signal.SIGTERM)))
+    monkeypatch.setattr(export, "run_batch", lambda *a, **k: 0)
+    old = signal.getsignal(signal.SIGTERM)
+    try:
+        with pytest.raises(SystemExit):
+            main(["export", "--dry-run"])
+        with pytest.raises(KeyboardInterrupt):
+            seen[0](signal.SIGTERM, None)
+    finally:
+        signal.signal(signal.SIGTERM, old)

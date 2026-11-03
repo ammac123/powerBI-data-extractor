@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     headless: bool = True
     state_path: Path = Path(".state/storage_state.json")
     timeout_s: float = 60.0
+    run_timeout_s: float = 300.0  # one export, retries included, from page switch to data
     out_dir: Path = Path("out")
     debug_dir: Path = Path("debug")
 
@@ -118,6 +119,15 @@ class SlicerRef(BaseModel):
         return [v for v in values if str(v) not in valid]
 
 
+class VisualRef(BaseModel):
+    """A visual registered under a friendly name."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    page: str
+
+
 class SlicerSpec(BaseModel):
     """Set a slicer to `values`, apply a `raw` SDK filter, or `reset` it to its default."""
 
@@ -170,7 +180,8 @@ class RunNode(BaseModel):
     """A node in the run tree. Children inherit page/visual/export_type/filters from their parent.
 
     A node with no children (and no matrix) is a leaf and produces exactly one export.
-    `matrix` is shorthand for children covering the cartesian product of the axes' values.
+    `matrix` is shorthand for children covering the cartesian product of the axes' values;
+    the node's `children` then sit under each combination.
     """
 
     label: str
@@ -235,14 +246,17 @@ class RunConfig(BaseModel):
     page: str | None = None
     visual: str | None = None
     keep_visuals: list[str] = Field(default_factory=list)
-    hide_others: bool = True
+    hide_others: bool | Literal["unused"] = True  # unused: hide only visuals no run or filter refers to
     filters: list[FilterSpec] = Field(default_factory=list)
+    visual_names: dict[str, VisualRef] = Field(default_factory=dict)
     slicer_names: dict[str, list[SlicerRef]] = Field(default_factory=dict)
     slicers: list[SlicerSpec] = Field(default_factory=list)
     runs: list[RunNode] = Field(default_factory=list)  # empty -> a single run from the fields above
     export_type: ExportType = "Summarized"
-    settle_ms: int = 750
-    stable_reads: int = 2
+    settle_ms: int = 1500
+    stable_reads: int = 1
+    on_empty: Literal["retry", "accept", "error"] = "retry"  # an export with no data rows
+    empty_reads: int = 3  # extra reads, one settle_ms apart, before an empty export is accepted
     workbooks: list[WorkbookSpec] = Field(default_factory=list)
 
     _normalise_slicers = field_validator("slicers", mode="before")(_slicer_specs)
@@ -258,6 +272,17 @@ class RunConfig(BaseModel):
 
         entries = {name: entry if isinstance(entry, list) else [entry] for name, entry in value.items()}
         return {name: [wrap(e) for e in entry] for name, entry in entries.items()}
+
+    @model_validator(mode="after")
+    def _check_visual_names(self) -> Self:
+        if shared := sorted(self.visual_names.keys() & self.slicer_names.keys()):
+            raise ValueError(f"names in both visual_names and slicer_names: {shared}")
+        seen: dict[tuple[str, str], str] = {}
+        for name, ref in self.visual_names.items():
+            other = seen.setdefault((ref.page, ref.id), name)
+            if other != name:
+                raise ValueError(f"visuals '{other}' and '{name}' share page and id")
+        return self
 
     @model_validator(mode="after")
     def _check_slicer_names(self) -> Self:

@@ -45,6 +45,57 @@ def test_plan_errors():
     assert [p.name for p in plan_workbook(wb(sheet("A", ["a"]), unassigned="ignore"), ["a", "b"])] == ["A"]
 
 
+LABEL_31 = "a" * 15 + "/" + "b" * 15
+LABEL_32 = LABEL_31 + "b"
+
+
+def test_label_too_long_for_its_own_sheet_fails():
+    with pytest.raises(ValueError, match="exceeds 31"):
+        plan_workbook(wb(sheet("A", ["a*"])), [LABEL_31, LABEL_32])
+    with pytest.raises(ValueError, match="exceeds 31"):
+        plan_workbook(wb(sheet("Z", ["z"])), [LABEL_32, "z"])
+
+
+def test_long_label_allowed_when_not_a_sheet_name():
+    assert plan_workbook(wb(sheet("Z", ["z"])), [LABEL_31, "z"])[1].name == LABEL_31
+    assert plan_workbook(wb(sheet("A", ["a*"])), [LABEL_32])[0].name == "A"
+    long_labels = [LABEL_32, LABEL_32 + "b"]
+    assert plan_workbook(wb(sheet("A", ["a*"], mode="aggregate", key=["k"])), long_labels)[0].labels == long_labels
+    assert [p.name for p in plan_workbook(wb(sheet("Z", ["z"]), unassigned="ignore"), [LABEL_32, "z"])] == ["Z"]
+
+
+DUPLICATE_KEYS = {LABEL_32: ("m,v\nJan,1\nJan,2\n", "ok"), "b": ("m,v\nJan,3\n", "ok")}
+
+
+def aggregate(**kw):
+    return wb(sheet("S", ["*"], mode="aggregate", **{"key": ["m"], **kw}))
+
+
+def test_long_label_with_repeated_keys_fails_build(tmp_path):
+    make_batch(tmp_path, DUPLICATE_KEYS)
+    with pytest.raises(ValueError, match=r"exceed 31 chars.*build-xlsx --batch " + tmp_path.name) as e:
+        build_workbooks([aggregate()], list(DUPLICATE_KEYS), tmp_path)
+    assert LABEL_32 in str(e.value)
+    assert not list(tmp_path.glob("*.xlsx"))
+    assert (tmp_path / f"{LABEL_32}.csv").exists()
+
+
+def test_suggested_fixes_for_long_label_with_repeated_keys_build(tmp_path):
+    make_batch(tmp_path, DUPLICATE_KEYS)
+    labels = list(DUPLICATE_KEYS)
+    (path,) = build_workbooks([aggregate(layout="blocks")], labels, tmp_path).paths
+    assert load_workbook(path).sheetnames == ["S"]
+    (path,) = build_workbooks([aggregate(key=["m", "v"])], labels, tmp_path).paths
+    assert load_workbook(path).sheetnames == ["S"]
+
+
+def test_long_label_without_repeated_keys_builds(tmp_path):
+    runs = {LABEL_32: ("m,v\nJan,1\n", "ok"), "b": ("m,v\nJan,3\n", "ok")}
+    make_batch(tmp_path, runs)
+    (path,) = build_workbooks([aggregate()], list(runs), tmp_path).paths
+    assert load_workbook(path).sheetnames == ["S"]
+
+
 def test_spec_validation():
     with pytest.raises(ValidationError):
         sheet("A", ["a"], mode="aggregate")

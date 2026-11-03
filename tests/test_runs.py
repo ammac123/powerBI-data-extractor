@@ -36,6 +36,43 @@ def test_matrix_is_cartesian_product():
     assert all(len(r.filters) == 2 and all(len(f.values) == 1 for f in r.filters) for r in runs)
 
 
+def test_matrix_children_nest_under_each_value():
+    runs = expand(cfg(slicer_names=names(), runs=[{
+        "label": "y", "slicers": {"year": 2026}, "children": [{
+            "label": "f", "matrix": [{"slicer": "freq", "values": ["W", "M"]}],
+            "children": [{"label": "r", "matrix": [{"slicer": "region", "values": ["North", "South"]}]}],
+        }],
+    }]))
+    assert {r.label: [s.values[0] for s in r.slicers] for r in runs} == {
+        "y/f/W/r/North": [2026, "W", "North"],
+        "y/f/W/r/South": [2026, "W", "South"],
+        "y/f/M/r/North": [2026, "M", "North"],
+        "y/f/M/r/South": [2026, "M", "South"],
+    }
+
+
+def test_matrix_children_nest_across_filter_axes_and_levels():
+    runs = expand(cfg(runs=[{
+        "label": "a", "matrix": [basic("T", "A", 1, 2)], "children": [{
+            "label": "b", "matrix": [basic("T", "B", 3)], "children": [{
+                "label": "c", "matrix": [basic("T", "C", 4)], "filters": [basic("T", "D", 5)],
+            }],
+        }],
+    }]))
+    assert [r.label for r in runs] == ["a/1/b/3/c/4", "a/2/b/3/c/4"]
+    assert [[f.values[0] for f in r.filters] for r in runs] == [[1, 3, 5, 4], [2, 3, 5, 4]]
+
+
+def test_matrix_child_override_applies_within_its_branch():
+    runs = expand(cfg(runs=[{
+        "label": "a", "matrix": [basic("T", "A", 1, 2)],
+        "children": [{"label": "b", "filters": [basic("T", "A", 9)]}, {"label": "c"}],
+    }]))
+    assert {r.label: r.filters[0].values for r in runs} == {
+        "a/1/b": [9], "a/1/c": [1], "a/2/b": [9], "a/2/c": [2],
+    }
+
+
 def test_matrix_rejects_raw_filters():
     raw = {"raw": {"target": {"table": "T", "column": "C"}}}
     with pytest.raises(ValueError, match="matrix"):
@@ -180,3 +217,46 @@ def test_child_null_resets_parent_value_and_parent_null_is_overridden():
 def test_alias_of_same_slicer_rejected():
     with pytest.raises(ValueError, match="same slicer more than once"):
         expand(cfg(slicer_names=names(), slicers={"region": "North", "r1": "South"}))
+
+
+VISUALS = {"sales": {"id": "v1", "page": "P"}, "returns": {"id": "v2", "page": "R"}}
+
+
+def test_visual_name_resolves_to_id():
+    runs = expand(cfg(visual="sales", visual_names=VISUALS, runs=[
+        {"label": "a"},
+        {"label": "b", "page": "R", "visual": "returns"},
+        {"label": "raw", "visual": "Some Title"},
+    ]))
+    assert [(r.label, r.page, r.visual, r.visual_name) for r in runs] == [
+        ("a", "P", "v1", "sales"), ("b", "R", "v2", "returns"), ("raw", "P", "Some Title", None),
+    ]
+
+
+def test_single_run_label_keeps_visual_name():
+    (run,) = expand(cfg(visual="sales", visual_names=VISUALS))
+    assert run.label == "sales" and run.visual == "v1"
+
+
+@pytest.mark.parametrize("node", [
+    {"label": "a", "visual": "returns"},  # the inherited page is not overridden
+    {"label": "a", "page": "R"},  # nor is the inherited visual
+])
+def test_visual_name_on_other_page_rejected(node):
+    with pytest.raises(ValueError, match="is on page"):
+        expand(cfg(visual="sales", visual_names=VISUALS, runs=[node]))
+
+
+def test_visual_filter_resolves_names():
+    runs = expand(cfg(visual="sales", visual_names=VISUALS, runs=[{"label": "a", "filters": [
+        basic("T", "C", 1, level="visual"),
+        basic("T", "D", 1, level="visual", visual="returns", page="R"),
+    ]}]))
+    assert set(runs[0].scopes()) == {("visual", "P", "v1"), ("visual", "R", "v2")}
+
+
+def test_visual_filter_name_on_other_page_rejected():
+    with pytest.raises(ValueError, match="is on page"):
+        expand(cfg(visual="sales", visual_names=VISUALS, runs=[
+            {"label": "a", "filters": [basic("T", "C", 1, level="visual", visual="returns")]},
+        ]))

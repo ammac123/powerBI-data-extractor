@@ -176,3 +176,35 @@ def test_empty_registry_entries_rejected(names, match):
 def test_axis_with_slicer_and_filter_keys_rejected():
     with pytest.raises(ValidationError):
         slicer_cfg(runs=[{"label": "r", "matrix": [{"slicer": "s", "table": "T", "column": "C", "values": [1]}]}])
+
+
+def test_visual_names_parsed():
+    c = RunConfig.model_validate({"visual_names": {"sales": {"id": "v1", "page": "P"}}})
+    assert (c.visual_names["sales"].id, c.visual_names["sales"].page) == ("v1", "P")
+
+
+@pytest.mark.parametrize("entry", [
+    "v1",
+    {"id": "v1"},
+    {"page": "P"},
+    {"id": "v1", "page": "P", "default": ["x"]},
+    [{"id": "v1", "page": "P"}],
+])
+def test_visual_names_take_only_id_and_page(entry):
+    with pytest.raises(ValueError, match="visual_names"):
+        RunConfig.model_validate({"visual_names": {"sales": entry}})
+
+
+def test_visual_names_share_page_and_id_rejected():
+    entry = {"id": "v1", "page": "P"}
+    with pytest.raises(ValueError, match="share page and id"):
+        RunConfig.model_validate({"visual_names": {"a": entry, "b": entry}})
+    RunConfig.model_validate({"visual_names": {"a": entry, "b": {"id": "v1", "page": "Q"}}})
+
+
+def test_name_in_both_registries_rejected():
+    with pytest.raises(ValueError, match="both visual_names and slicer_names"):
+        RunConfig.model_validate({
+            "visual_names": {"a": {"id": "v1", "page": "P"}},
+            "slicer_names": {"a": {"id": "s1", "page": "P"}},
+        })
