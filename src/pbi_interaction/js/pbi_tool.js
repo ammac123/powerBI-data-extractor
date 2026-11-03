@@ -16,7 +16,8 @@
 //   applyScopes(scopes)               -> sets (replaces) filters per report/page/visual scope
 //   applySlicers(pageRef, items)      -> { applied: [{ visual, ok, error?, values, filterType }] }; page must already be active
 //                                        items: [{ visual, state: { kind: "in", values } | { kind: "raw", state } }]
-//   exportVisual(pageRef, visualRef, opts) -> { csv, reads, rendered }; waits for pending changes to render first
+//   exportVisual(pageRef, visualRef, opts) -> { csv, reads, rendered, empty }; waits for pending changes to render first
+//                                        opts.emptyReads: extra reads, one settleMs apart, while the CSV has no data rows
 //
 // Settling: every command that changes data (page switch, filters, slicers, showing a hidden visual) marks the report
 // as changed once the SDK has accepted it. The report fires one `rendered` after all pending changes finish, so a
@@ -360,15 +361,18 @@
 
   // Waits for pending changes to render (exporting earlier returns the previous data), then reads the visual's data.
   // A read only counts if no render happened during it; with stableReads > 1, consecutive reads must also agree.
+  // True when the CSV has no data line below its header; separator-only lines count as blank.
+  const hasNoRows = (csv) => csv.replace(/^\ufeff/, "").split(/\r?\n/).filter((l) => l.replace(/[\s,"]/g, "")).length < 2;
+
   async function exportVisual(pageRef, visualRef, opts = {}) {
-    const { type = "Summarized", stableReads = 1 } = opts;
+    const { type = "Summarized", stableReads = 1, emptyReads = 0 } = opts;
     const report = getReport();
     const page = await findPage(report, pageRef);
     const visual = await findVisual(page, visualRef);
     const s = lifecycle(wrapperEl());
     const settled = await waitSettled();
 
-    let prev = null, agree = 0, reads = 0;
+    let prev = null, agree = 0, reads = 0, emptyLeft = emptyReads;
     while (performance.now() < state.deadline) {
       const rendersBefore = s.renders;
       const res = await visual.exportData(exportType(type));
@@ -380,9 +384,16 @@
         await waitFor(() => quiet(s), "Quiet after an unexpected render");
         continue;
       }
+      const empty = hasNoRows(data);
+      if (empty && emptyLeft > 0) {  // a visual can export headers only while its query is still in flight
+        emptyLeft -= 1;
+        prev = null, agree = 0;
+        await sleep(state.settleMs);
+        continue;
+      }
       agree = data === prev ? agree + 1 : 1;
       prev = data;
-      if (agree >= stableReads) return { csv: data, reads, rendered: settled.rendered };
+      if (agree >= stableReads) return { csv: data, reads, rendered: settled.rendered, empty };
       await sleep(state.settleMs);
     }
     throw new Error(`Export never stabilised (${reads} reads) - refusing to return possibly stale data`);

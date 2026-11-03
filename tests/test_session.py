@@ -67,7 +67,7 @@ def test_call_sequence():
     export = session.run_one(run_with(report_filter(1)))
     assert names(session) == ["waitReady", "setPage", "hideVisuals", "applyScopes", "exportVisual"]
     assert session.calls[2][1] == ("P", ["V", "Keep"])
-    assert session.calls[-1][1][2] == {"type": "Summarized", "stableReads": 1}
+    assert session.calls[-1][1][2] == {"type": "Summarized", "stableReads": 1, "emptyReads": 3}
     assert export.csv == "a\n1\n" and export.rendered
 
 
@@ -461,7 +461,8 @@ def test_keep_visuals_resolves_visual_names_for_the_run_page():
 def test_hide_unused_keeps_every_visual_any_run_refers_to():
     session = make_session()
     session.cfg = RunConfig(keep_visuals=["Keep"], hide_others="unused")
-    other = Run("o", "P", "W", "Summarized", [FilterSpec(level="visual", visual="X", table="T", column="C", values=[1])])
+    visual_filter = FilterSpec(level="visual", visual="X", table="T", column="C", values=[1])
+    other = Run("o", "P", "W", "Summarized", [visual_filter])
     session.track_runs([run_with(), other, slicer_run(slicer("Category", ["A"]))])
     session.run_one(run_with())
     hide = next(args for fn, args in session.calls if fn == "hideVisuals")
@@ -473,3 +474,12 @@ def test_hide_others_false_never_hides():
     session.cfg = RunConfig(hide_others=False)
     session.run_one(run_with())
     assert "hideVisuals" not in names(session)
+
+
+def test_empty_reads_follow_on_empty():
+    for mode, reads in (("retry", 3), ("accept", 0)):
+        session = make_session()
+        session.cfg = RunConfig(on_empty=mode)
+        session.run_one(run_with())
+        opts = next(args for fn, args in session.calls if fn == "exportVisual")[2]
+        assert opts["emptyReads"] == reads

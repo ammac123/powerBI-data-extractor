@@ -52,6 +52,9 @@ The CLI reads `config.yaml` from the working directory (override with `--config`
 - `settle_ms`, `stable_reads`: after a change, the export waits for the report's `rendered` event, then for
   `settle_ms` (default 1500) without another, before reading; `stable_reads` identical reads are then needed
   (default 1). There is no fallback: a change that never renders fails at `PBI_RUN_TIMEOUT_S`.
+- `on_empty` / `empty_reads`: an export with no data rows is usually a visual whose query had not returned yet.
+  With `retry` (default) it is re-read up to `empty_reads` times (default 3, one `settle_ms` apart); if it stays
+  empty the run is still written but marked `empty`. `error` fails the run instead; `accept` skips the check.
 - `runs`: a tree of runs. A node with `children` is a group; a node without is one export. Filters accumulate
   down the tree and a child filter on the same table/column replaces its parent's. `matrix` expands to one
   child per combination of the axes' values; a node's `children` sit under each combination, so
@@ -197,7 +200,11 @@ out/<batch>/
 ```
 
 `manifest.csv` has one row per run: `label, status, rows, sha256, seconds, file, note, page, visual, filters`.
-Status is `ok`, `error`, or `suspect`. On resume, runs already `ok` are skipped; others are rerun.
+Status is `ok`, `empty`, `error`, or `suspect`. On resume, runs already `ok` are skipped; others are rerun.
+
+`empty` means no data rows even after re-reading. The (empty) CSV is written, the raw export is kept in
+`.raw/<label>.csv`, the run counts as not ok in the exit code, and the note says how many sibling runs in its group
+have data (an empty run beside populated ones is likely a misfire). `build-xlsx` omits `empty` runs and lists them.
 
 `suspect` means the data is byte-identical to the previous export and no re-render was observed after the
 filters changed, which is the signature of stale data. Identical data after an observed re-render is

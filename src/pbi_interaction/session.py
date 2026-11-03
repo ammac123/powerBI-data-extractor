@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 class Export(NamedTuple):
     csv: str
     rendered: bool  # this run changed the report and waited for it to re-render; False: nothing needed changing
+    empty: bool = False  # no data rows, even after re-reading
 
 
 SlicerKey = tuple[str, str]  # (page, slicer id)
@@ -67,7 +68,7 @@ class PbiSession:
         self._deadline: float | None = None  # monotonic time the current run must finish by
         self._slicer_catalog: dict[str, list[dict]] = {}
         self._slicer_set: set[SlicerKey] = set()  # set by an earlier run: reset to default once unused
-        self._referenced: dict[str, set[str]] = {}  # page -> visual/slicer refs used by any run, for hide_others: unused
+        self._referenced: dict[str, set[str]] = {}  # page -> refs any run uses (hide_others: unused)
         self.page: Page
         self._context: BrowserContext
         self._browser: Browser
@@ -381,12 +382,15 @@ class PbiSession:
             if use_slicers:
                 self._apply_slicers(run.page, desired)
             self._apply_filters(run)
-            opts = {"type": run.export_type, "stableReads": self.cfg.stable_reads}
+            opts = {
+                "type": run.export_type, "stableReads": self.cfg.stable_reads,
+                "emptyReads": 0 if self.cfg.on_empty == "accept" else self.cfg.empty_reads,
+            }
             res = self.call("exportVisual", run.page, run.visual, opts)
         finally:
             self._deadline = None
         log.info("Export OK: successful after %d attempts", res["reads"])
-        return Export(res["csv"], res["rendered"])
+        return Export(res["csv"], res["rendered"], res.get("empty", False) and self.cfg.on_empty != "accept")
 
     # ---- debugging -------------------------------------------------------
 

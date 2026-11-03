@@ -17,6 +17,7 @@ class FakeSession:
         self.dumps: list[str] = []
         self.deadlines: list[float] = []
         self.settings = SimpleNamespace(run_timeout_s=300)
+        self.cfg = SimpleNamespace(on_empty="retry")
 
     def run_one(self, run, deadline):
         self.calls.append(run.label)
@@ -159,3 +160,29 @@ def test_changed_page_or_visual_reruns(tmp_path, changed):
     fields = {"page": "P", "visual": "V", **changed}
     run_batch(moved, [Run("a", fields["page"], fields["visual"], "Summarized", [])], tmp_path)
     assert moved.calls == ["a"]
+
+
+def empty_export():
+    return Export("a,b\n", rendered=True, empty=True)
+
+
+def test_empty_export_is_written_flagged_and_counted_failed(tmp_path):
+    session = FakeSession({"g/x": empty_export()})
+    assert run_batch(session, runs("g/x"), tmp_path) == 1
+    row = manifest(tmp_path)["g/x"]
+    assert row["status"] == "empty" and row["rows"] == "0"
+    assert (tmp_path / "g/x.csv").exists() and (tmp_path / ".raw/g/x.csv").read_text() == "a,b\n"
+    assert "raw export: .raw/g/x.csv" in row["note"]
+
+
+def test_empty_run_notes_how_many_siblings_have_data(tmp_path):
+    session = FakeSession({"g/a": data(1), "g/b": empty_export(), "g/c": data(3)})
+    run_batch(session, runs("g/a", "g/b", "g/c"), tmp_path)
+    assert manifest(tmp_path)["g/b"]["note"].endswith("2/2 siblings have data")
+
+
+def test_empty_run_is_rerun_on_resume(tmp_path):
+    run_batch(FakeSession({"a": empty_export()}), runs("a"), tmp_path)
+    again = FakeSession({"a": data(1)})
+    assert run_batch(again, runs("a"), tmp_path) == 0
+    assert manifest(tmp_path)["a"]["status"] == "ok"

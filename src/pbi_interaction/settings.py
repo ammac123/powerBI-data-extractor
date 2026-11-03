@@ -255,6 +255,8 @@ class RunConfig(BaseModel):
     export_type: ExportType = "Summarized"
     settle_ms: int = 1500
     stable_reads: int = 1
+    on_empty: Literal["retry", "accept", "error"] = "retry"  # an export with no data rows
+    empty_reads: int = 3  # extra reads, one settle_ms apart, before an empty export is accepted
     workbooks: list[WorkbookSpec] = Field(default_factory=list)
 
     _normalise_slicers = field_validator("slicers", mode="before")(_slicer_specs)
